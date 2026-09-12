@@ -1,5 +1,11 @@
 # UniFi Network for Omarchy
 
+[![CI](https://github.com/pkeenan87/omarchy-ubiquiti-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/pkeenan87/omarchy-ubiquiti-plugin/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Omarchy plugin](https://img.shields.io/badge/omarchy-plugin-6f42c1)](https://plugins.omarchy.org)
+
+![The panel, showing internet status, devices and clients](preview.png)
+
 A bar widget for a UniFi OS console — Dream Machine, Cloud Gateway, UDM Pro,
 UDR, or UniFi OS Server. It shows what your network is doing without opening
 the UniFi app, and handles the two things you usually open the app for:
@@ -213,6 +219,13 @@ The suite covers state shaping against realistic payloads and drives the
 client end to end against a stub console with a self-signed certificate,
 including auth failures, unreachable hosts, and every action payload.
 
+## Contributing
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security issues go through [SECURITY.md](SECURITY.md), not the public tracker.
+
+Release history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

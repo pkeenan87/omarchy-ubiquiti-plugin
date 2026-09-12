@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the widget, panel, or CLI behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security vulnerabilities here — see
+        [SECURITY.md](https://github.com/pkeenan87/omarchy-ubiquiti-plugin/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: omarchy-unifi doctor
+      description: |
+        Paste the output. It never prints your API key — it reports only
+        whether one is set, and the certificate fingerprint.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: gateway
+    attributes:
+      label: Gateway / console model
+      placeholder: "UDM Pro, UCG-Ultra, Cloud Key Gen2 + USG 3P, UniFi OS Server…"
+    validations:
+      required: true
+
+  - type: input
+    id: network-version
+    attributes:
+      label: UniFi Network version
+      placeholder: "9.0.114"
+
+  - type: textarea
+    id: shell-log
+    attributes:
+      label: Shell log
+      description: |
+        If the panel or bar widget misbehaves, run this and paste anything
+        mentioning the plugin. A QML error can make it fail to load silently.
+
+        ```
+        journalctl --user -t omarchy-shell _PID=$(pgrep -x quickshell) | grep -i unifi
+        ```
+      render: text
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before filing
+      options:
+        - label: I restarted the shell (`omarchy restart shell`) and it still happens
+          required: true
+        - label: I redacted anything private from the output above (client names, SSIDs, public IPs)
+          required: true

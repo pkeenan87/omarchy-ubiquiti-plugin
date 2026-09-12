@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/pkeenan87/omarchy-ubiquiti-plugin/security/advisories/new
+    about: Report privately — never in a public issue.
+  - name: Omarchy plugin documentation
+    url: https://plugins.omarchy.org/develop.html
+    about: How Omarchy shell plugins are built and loaded.
+  - name: Question about your UniFi console
+    url: https://community.ui.com/
+    about: Ubiquiti's community covers the console itself, as opposed to this plugin.

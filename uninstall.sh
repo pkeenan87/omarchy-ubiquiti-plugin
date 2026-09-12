@@ -53,7 +53,11 @@ if [[ $purge == ask ]]; then
     printf '\n%s\n' "Your API key and pinned certificate are in $config_dir,"
     printf '%s\n' "and $state_dir lists every client on your network."
     read -r -p "Delete them too? [y/N]: " answer
-    [[ ${answer,,} == y || ${answer,,} == yes ]] && purge=yes || purge=no
+    if [[ ${answer,,} == y || ${answer,,} == yes ]]; then
+      purge=yes
+    else
+      purge=no
+    fi
   else
     purge=no
   fi

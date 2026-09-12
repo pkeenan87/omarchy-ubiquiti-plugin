@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests — Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the documented floor; 3.x guards against future breakage.
+        python: ["3.9", "3.x"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@e9d6f990972a57673cdb72ec29e19d42ba28880f # v6.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m py_compile bin/omarchy-unifi
+      - name: Unit and integration tests
+        # The integration suite needs openssl to mint a stub console
+        # certificate; it is present on ubuntu-latest.
+        run: python -m unittest discover -s tests -v
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: shellcheck
+        run: shellcheck install.sh uninstall.sh
+
+  manifest:
+    name: Plugin manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@e9d6f990972a57673cdb72ec29e19d42ba28880f # v6.0.0
+        with:
+          python-version: "3.x"
+      - name: Validate against the Omarchy plugin contract
+        # `omarchy plugin validate` needs an Omarchy install, which no runner
+        # has. tests/test_manifest.py encodes the same published contract.
+        run: python -m unittest tests.test_manifest -v
