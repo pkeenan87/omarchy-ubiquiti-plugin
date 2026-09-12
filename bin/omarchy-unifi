@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
+import http.client
 import json
 import os
 import ssl
@@ -26,6 +28,8 @@ CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), APP
 )
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+# The console's own certificate, captured at setup and trusted from then on.
+CERT_PATH = os.path.join(CONFIG_DIR, "console.pem")
 STATE_DIR = os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), APP
 )
@@ -81,6 +85,82 @@ def save_config(cfg: dict) -> None:
 # api client
 
 
+def split_host(host: str):
+    """Split "host" or "host:port" into (host, port), tolerating IPv6."""
+    if host.startswith("["):
+        literal, _, rest = host.partition("]")
+        port = rest.lstrip(":")
+        return literal.lstrip("["), int(port) if port.isdigit() else 443
+    name, _, port = host.rpartition(":")
+    if name and port.isdigit():
+        return name, int(port)
+    return host, 443
+
+
+def fetch_certificate(host: str) -> str:
+    """Retrieve the certificate the console is currently presenting."""
+    name, port = split_host(host)
+    try:
+        return ssl.get_server_certificate((name, port))
+    except (OSError, ssl.SSLError) as exc:
+        raise UniFiError(f"cannot read a certificate from {host}: {exc}")
+
+
+def certificate_fingerprint(pem: str) -> str:
+    digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2)).upper()
+
+
+def save_certificate(pem: str) -> None:
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    tmp = CERT_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(pem)
+    os.replace(tmp, CERT_PATH)
+
+
+class CertificateMismatch(OSError):
+    """The console presented a certificate other than the pinned one."""
+
+    def __init__(self, expected: str, actual: str):
+        super().__init__("certificate fingerprint mismatch")
+        self.expected = expected
+        self.actual = actual
+
+
+def load_fingerprint(path: str) -> str:
+    """SHA-256 of the pinned certificate, or "" when nothing is pinned."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return hashlib.sha256(ssl.PEM_cert_to_DER_cert(fh.read())).hexdigest()
+    except (OSError, ValueError):
+        return ""
+
+
+def build_opener(context, fingerprint: str):
+    """An opener that aborts the connection before sending anything if the
+    peer is not the pinned console. The API key is a full-admin credential,
+    so it must never reach a host we have not identified."""
+    if not fingerprint:
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+    class PinnedConnection(http.client.HTTPSConnection):
+        def connect(self):
+            super().connect()
+            actual = hashlib.sha256(
+                self.sock.getpeercert(binary_form=True)).hexdigest()
+            if actual != fingerprint:
+                self.close()
+                raise CertificateMismatch(fingerprint, actual)
+
+    class PinnedHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(PinnedConnection, req, context=context)
+
+    return urllib.request.build_opener(PinnedHandler)
+
+
 class UniFiError(Exception):
     def __init__(self, message: str, status: int = 0, api_code: str = ""):
         super().__init__(message)
@@ -132,14 +212,25 @@ class UniFi:
         self.key = str(cfg.get("apiKey") or "").strip()
         self.site = str(cfg.get("site") or "default").strip() or "default"
         self.timeout = float(cfg.get("timeoutSec") or 6)
+        self.cert_path = str(cfg.get("certPath") or CERT_PATH)
+        self.fingerprint = ""
         if cfg.get("verifySsl"):
+            # The console has a certificate this machine's CA store trusts.
             self.ctx = ssl.create_default_context()
+            self.trust = "ca"
         else:
-            # UniFi consoles ship a self-signed cert for their LAN address;
-            # verification would fail for every normal user.
+            # A console's certificate is an end-entity cert (CA:FALSE), so it
+            # cannot serve as a trust anchor - OpenSSL rejects it with "invalid
+            # CA certificate" even with PARTIAL_CHAIN. Pin the fingerprint
+            # instead and check it ourselves right after the handshake.
             self.ctx = ssl.create_default_context()
             self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_NONE
+            self.fingerprint = load_fingerprint(self.cert_path)
+            # Nothing pinned yet means an install predating pinning: it still
+            # works, but the key goes to whatever answers. `trust-cert` fixes it.
+            self.trust = "pinned" if self.fingerprint else "none"
+        self.opener = build_opener(self.ctx, self.fingerprint)
 
     def _call(self, path: str, body=None, method=None) -> dict:
         if not self.host:
@@ -156,7 +247,7 @@ class UniFi:
         if data:
             req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as resp:
+            with self.opener.open(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             code, detail = _api_error(exc)
@@ -167,6 +258,15 @@ class UniFi:
             suffix = f": {detail}" if detail else ""
             raise UniFiError(f"HTTP {exc.code} for {path}{suffix}", exc.code, code)
         except urllib.error.URLError as exc:
+            if isinstance(exc.reason, (CertificateMismatch,
+                                       ssl.SSLCertVerificationError)):
+                # Aborted during/just after the handshake, so the API key was
+                # never transmitted.
+                raise UniFiError(
+                    f"{self.host} presented a certificate that does not match "
+                    f"the pinned one. If you replaced the console's "
+                    f"certificate, re-pin with: {APP} trust-cert",
+                    api_code="cert-mismatch")
             raise UniFiError(f"cannot reach {self.host}: {exc.reason}")
         except TimeoutError:
             raise UniFiError(f"timed out talking to {self.host}")
@@ -188,6 +288,18 @@ class UniFi:
 
 # --------------------------------------------------------------------------
 # state building
+
+
+# C0/C1 control characters, including the newline that would let a client
+# alias paint over the row beneath it. Names here are chosen by whoever owns
+# the device (DHCP option 12), so they are untrusted input.
+_CONTROL = {c: None for c in list(range(0x00, 0x20)) + [0x7F] + list(range(0x80, 0xA0))}
+
+
+def _clean(value, limit: int = 64) -> str:
+    """Make a console-supplied string safe to put in a fixed-height row."""
+    text = str(value or "").translate(_CONTROL).strip()
+    return text[:limit]
 
 
 def _num(value, default=0):
@@ -264,8 +376,8 @@ def build_devices(devices: list) -> dict:
         items.append({
             "id": dev.get("_id") or dev.get("mac") or "",
             "mac": dev.get("mac") or "",
-            "name": dev.get("name") or dev.get("model") or dev.get("mac") or "Unnamed",
-            "model": dev.get("model") or "",
+            "name": _clean(dev.get("name") or dev.get("model") or dev.get("mac")) or "Unnamed",
+            "model": _clean(dev.get("model")),
             "kind": DEVICE_KIND.get(str(dev.get("type") or "").lower(), "Device"),
             "ip": dev.get("ip") or "",
             "online": state == 1,
@@ -294,8 +406,8 @@ def build_client_list(clients: list) -> list:
     for cli in clients:
         if not isinstance(cli, dict):
             continue
-        name = (cli.get("name") or cli.get("hostname") or cli.get("oui")
-                or cli.get("mac") or "Unknown")
+        name = _clean(cli.get("name") or cli.get("hostname") or cli.get("oui")
+                      or cli.get("mac")) or "Unknown"
         items.append({
             "mac": cli.get("mac") or "",
             "name": name,
@@ -303,7 +415,7 @@ def build_client_list(clients: list) -> list:
             "wired": bool(cli.get("is_wired")),
             "guest": bool(cli.get("is_guest")),
             "network": cli.get("network") or "",
-            "essid": cli.get("essid") or "",
+            "essid": _clean(cli.get("essid"), 32),
             "signal": _num(cli.get("signal"), 0),
             "downBps": _num(cli.get("rx_bytes-r")),
             "upBps": _num(cli.get("tx_bytes-r")),
@@ -348,8 +460,8 @@ def collect(api: UniFi) -> dict:
             if isinstance(user, dict) and user.get("blocked"):
                 blocked.append({
                     "mac": user.get("mac") or "",
-                    "name": (user.get("name") or user.get("hostname")
-                             or user.get("oui") or user.get("mac") or "Unknown"),
+                    "name": _clean(user.get("name") or user.get("hostname")
+                                   or user.get("oui") or user.get("mac")) or "Unknown",
                 })
     except UniFiError:
         pass
@@ -466,6 +578,19 @@ def cmd_setup(args) -> int:
     site = input(f"Site name [{cfg['site']}]: ").strip()
     cfg["site"] = site or cfg["site"]
 
+    if not cfg.get("verifySsl"):
+        # Capture the certificate BEFORE the key is ever sent, so the very
+        # first request is already pinned to a specific console.
+        print("\nReading the console's certificate...")
+        try:
+            pem = fetch_certificate(cfg["host"])
+        except UniFiError as exc:
+            print(f"  failed: {exc}", file=sys.stderr)
+            print("\nNothing was saved.", file=sys.stderr)
+            return 1
+        save_certificate(pem)
+        print(f"  pinned {certificate_fingerprint(pem)[:29]}...")
+
     print("\nChecking connection...")
     api = UniFi(cfg)
     try:
@@ -504,6 +629,37 @@ def _enable_polling() -> None:
         print(f"Could not enable {unit}: {result.stderr.strip()}", file=sys.stderr)
 
 
+def cmd_trust_cert(args) -> int:
+    """Re-pin the console's certificate after it legitimately changed."""
+    cfg = load_config()
+    if not cfg["host"]:
+        print(f"No host configured; run: {APP} setup", file=sys.stderr)
+        return 1
+    try:
+        pem = fetch_certificate(cfg["host"])
+    except UniFiError as exc:
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+
+    new_print = certificate_fingerprint(pem)
+    if os.path.exists(CERT_PATH):
+        with open(CERT_PATH, "r", encoding="utf-8") as fh:
+            old_print = certificate_fingerprint(fh.read())
+        if old_print == new_print:
+            print(f"Already pinned; certificate unchanged.\n  {new_print}")
+            return 0
+        print(f"Certificate has CHANGED.\n  was {old_print}\n  now {new_print}\n")
+        print("Only continue if you replaced it yourself. If you did not, an")
+        print("attacker may be impersonating the console on your network.")
+        if input("Re-pin? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("Left unchanged.")
+            return 1
+
+    save_certificate(pem)
+    print(f"Pinned {new_print}")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     cfg = load_config()
     print(f"config      {CONFIG_PATH}")
@@ -516,6 +672,16 @@ def cmd_doctor(args) -> int:
     print(f"site        {cfg['site']}")
     print(f"api key     {'set' if cfg['apiKey'] else '(unset)'}")
     print(f"state       {STATE_PATH}")
+    api_probe = UniFi(cfg)
+    if api_probe.trust == "ca":
+        print("tls         verified against the system CA store")
+    elif api_probe.trust == "pinned":
+        with open(CERT_PATH, "r", encoding="utf-8") as fh:
+            print(f"tls         pinned to {certificate_fingerprint(fh.read())}")
+    else:
+        print(f"tls         NOT VERIFIED - the API key is sent to whatever "
+              f"answers at {cfg['host'] or 'the host'}.")
+        print(f"            Pin the console's certificate with: {APP} trust-cert")
 
     api = UniFi(cfg)
     ok = True
@@ -693,6 +859,7 @@ def main(argv=None) -> int:
 
     sub.add_parser("setup", help="configure console address and API key").set_defaults(func=cmd_setup)
     sub.add_parser("doctor", help="check connectivity and permissions").set_defaults(func=cmd_doctor)
+    sub.add_parser("trust-cert", help="pin the console's TLS certificate").set_defaults(func=cmd_trust_cert)
     sub.add_parser("poll", help="fetch once and update the state file").set_defaults(func=cmd_poll)
     sub.add_parser("daemon", help="poll continuously").set_defaults(func=cmd_daemon)
     sub.add_parser("open", help="open the console web UI").set_defaults(func=cmd_open)

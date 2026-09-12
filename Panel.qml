@@ -250,6 +250,7 @@ Panel {
     opacity: enabled ? 1 : 0.4
 
     Text {
+      textFormat: Text.PlainText
       id: buttonLabel
       anchors.centerIn: parent
       text: actionButton.label
@@ -306,6 +307,7 @@ Panel {
           spacing: Style.space(8)
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width - headerActions.width - parent.spacing
             anchors.verticalCenter: parent.verticalCenter
             text: "UNIFI NETWORK"
@@ -381,6 +383,7 @@ Panel {
                 spacing: Style.space(8)
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   text: "Connect your UniFi console"
                   color: root.foreground
@@ -390,6 +393,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   wrapMode: Text.WordWrap
                   text: "Create an API key in UniFi Network under Settings → Control "
@@ -428,6 +432,7 @@ Panel {
             // hero's trailing pill: it is the fastest-changing number here and
             // reads better as the last line of that block than as a badge.
             Text {
+              textFormat: Text.PlainText
               visible: root.configured && root.wanUp
               width: parent.width
               text: "↓ " + root.humanBps(root.wan.downBps) + "bps"
@@ -452,6 +457,7 @@ Panel {
                 color: Util.alpha(root.urgent, 0.14)
 
                 Text {
+                  textFormat: Text.PlainText
                   id: alertText
                   anchors.left: parent.left
                   anchors.right: parent.right
@@ -469,6 +475,7 @@ Panel {
 
             // ---- action feedback ----
             Text {
+              textFormat: Text.PlainText
               visible: root.busyLabel !== "" || root.actionError !== ""
               width: parent.width
               text: root.actionError !== "" ? root.actionError : root.busyLabel + "…"
@@ -527,6 +534,7 @@ Panel {
                     spacing: Style.space(1)
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: deviceRow.modelData.name
                       color: root.foreground
@@ -536,6 +544,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: {
                         var item = deviceRow.modelData
@@ -618,6 +627,7 @@ Panel {
                     spacing: Style.space(1)
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: clientRow.modelData.name
                            + (clientRow.modelData.guest ? "  (guest)" : "")
@@ -628,6 +638,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: {
                         var item = clientRow.modelData
@@ -675,6 +686,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.configured && root.clientList.length > root.maxClients
               width: parent.width
               text: "+ " + (root.clientList.length - root.maxClients) + " more"
@@ -723,6 +735,7 @@ Panel {
                   spacing: Style.space(10)
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - unblockButton.width - parent.spacing
                     text: blockedRow.modelData.name
@@ -748,6 +761,7 @@ Panel {
 
             // ---- footer ----
             Text {
+              textFormat: Text.PlainText
               visible: root.configured
               width: parent.width
               text: {

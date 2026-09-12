@@ -25,6 +25,17 @@ spec = importlib.util.spec_from_loader(
 uni = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(uni)
 
+# Redirect every user-owned path into a temp dir before any test runs. Without
+# this the suite reads the real ~/.config/omarchy-unifi - which on a machine
+# with a pinned console makes the stub tests fail against the operator's own
+# certificate, and risks touching their files.
+_SANDBOX = tempfile.mkdtemp(prefix="omarchy-unifi-tests-")
+uni.CONFIG_DIR = _SANDBOX
+uni.CONFIG_PATH = os.path.join(_SANDBOX, "config.json")
+uni.CERT_PATH = os.path.join(_SANDBOX, "console.pem")
+uni.STATE_DIR = os.path.join(_SANDBOX, "state")
+uni.STATE_PATH = os.path.join(uni.STATE_DIR, "state.json")
+
 from test_unifi import CLIENTS, DEVICES, HEALTH  # noqa: E402
 
 API_KEY = "test-key-abc123"
@@ -95,9 +106,16 @@ class StubConsole:
         self.tmp = tempfile.mkdtemp()
         cert = os.path.join(self.tmp, "cert.pem")
         key = os.path.join(self.tmp, "key.pem")
+        # CA:FALSE matters. A real console presents an end-entity certificate,
+        # which OpenSSL refuses to use as a trust anchor ("invalid CA
+        # certificate") - the reason this plugin pins a fingerprint rather
+        # than treating the cert as a CA. `openssl req -x509` defaults to
+        # CA:TRUE, which would make this stub unrepresentative and let a
+        # broken pinning implementation pass its tests.
         subprocess.run(
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=unifi.local"],
+             "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=unifi.local",
+             "-addext", "basicConstraints=critical,CA:FALSE"],
             check=True, capture_output=True)
         self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -113,6 +131,92 @@ class StubConsole:
     def stop(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+class TestCertificatePinning(unittest.TestCase):
+    """Pinning is what stops a full-admin API key going to an impersonator."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.console = StubConsole()
+        cls.tmp = tempfile.mkdtemp()
+        cls.pin = os.path.join(cls.tmp, "console.pem")
+        with open(cls.pin, "w") as fh:
+            fh.write(uni.fetch_certificate(cls.console.host))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.console.stop()
+
+    def cfg(self, **over):
+        base = {"host": self.console.host, "apiKey": API_KEY, "site": "default",
+                "certPath": self.pin}
+        base.update(over)
+        return base
+
+    def test_pinned_certificate_is_accepted(self):
+        api = uni.UniFi(self.cfg())
+        self.assertEqual(api.trust, "pinned")
+        self.assertEqual(len(api.legacy("stat/health")), len(HEALTH))
+
+    def test_a_different_certificate_is_refused(self):
+        # Stand up a second console with its own cert: the impersonator case.
+        impostor = StubConsole()
+        try:
+            api = uni.UniFi(self.cfg(host=impostor.host))
+            with self.assertRaises(uni.UniFiError) as ctx:
+                api.legacy("stat/health")
+            self.assertEqual(ctx.exception.api_code, "cert-mismatch")
+            self.assertIn("trust-cert", str(ctx.exception))
+        finally:
+            impostor.stop()
+
+    def test_mismatch_fails_before_the_key_is_sent(self):
+        impostor = StubConsole()
+        try:
+            before = len(received)
+            api = uni.UniFi(self.cfg(host=impostor.host))
+            with self.assertRaises(uni.UniFiError):
+                api.legacy("stat/health")
+            # The TLS handshake failed, so no request - and no key - landed.
+            self.assertEqual(len(received), before)
+        finally:
+            impostor.stop()
+
+    def test_without_a_pin_it_still_connects_but_says_so(self):
+        api = uni.UniFi(self.cfg(certPath=os.path.join(self.tmp, "absent.pem")))
+        self.assertEqual(api.trust, "none")
+        self.assertEqual(len(api.legacy("stat/health")), len(HEALTH))
+
+    def test_verify_ssl_overrides_pinning_and_rejects_self_signed(self):
+        api = uni.UniFi(self.cfg(verifySsl=True))
+        self.assertEqual(api.trust, "ca")
+        with self.assertRaises(uni.UniFiError):
+            api.legacy("stat/health")
+
+    def test_stub_certificate_is_not_a_ca(self):
+        # Guards the assumption above: if this ever becomes CA:TRUE the
+        # pinning tests stop reflecting real hardware.
+        text = subprocess.run(["openssl", "x509", "-in", self.pin, "-noout", "-text"],
+                              capture_output=True, text=True).stdout
+        self.assertIn("CA:FALSE", text)
+
+    def test_fingerprint_is_stable_and_readable(self):
+        with open(self.pin) as fh:
+            pem = fh.read()
+        fp = uni.certificate_fingerprint(pem)
+        self.assertEqual(fp, uni.certificate_fingerprint(pem))
+        self.assertEqual(len(fp), 95)  # 32 bytes as AA:BB:...
+        self.assertRegex(fp, r"^[0-9A-F]{2}(:[0-9A-F]{2}){31}$")
+
+
+class TestHostSplitting(unittest.TestCase):
+    def test_forms(self):
+        self.assertEqual(uni.split_host("192.168.1.9"), ("192.168.1.9", 443))
+        self.assertEqual(uni.split_host("192.168.1.9:8443"), ("192.168.1.9", 8443))
+        self.assertEqual(uni.split_host("unifi.lan"), ("unifi.lan", 443))
+        self.assertEqual(uni.split_host("[fe80::1]:8443"), ("fe80::1", 8443))
+        self.assertEqual(uni.split_host("[fe80::1]"), ("fe80::1", 443))
 
 
 class TestAgainstStubConsole(unittest.TestCase):

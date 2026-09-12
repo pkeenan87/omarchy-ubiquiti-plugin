@@ -20,6 +20,17 @@ spec = importlib.util.spec_from_loader(
 uni = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(uni)
 
+# Redirect every user-owned path into a temp dir before any test runs. Without
+# this the suite reads the real ~/.config/omarchy-unifi - which on a machine
+# with a pinned console makes the stub tests fail against the operator's own
+# certificate, and risks touching their files.
+_SANDBOX = tempfile.mkdtemp(prefix="omarchy-unifi-tests-")
+uni.CONFIG_DIR = _SANDBOX
+uni.CONFIG_PATH = os.path.join(_SANDBOX, "config.json")
+uni.CERT_PATH = os.path.join(_SANDBOX, "console.pem")
+uni.STATE_DIR = os.path.join(_SANDBOX, "state")
+uni.STATE_PATH = os.path.join(uni.STATE_DIR, "state.json")
+
 
 HEALTH = [
     {"subsystem": "wan", "status": "ok", "gw_mac": "aa:bb:cc:dd:ee:01",
@@ -158,6 +169,40 @@ class TestClients(unittest.TestCase):
     def test_sorted_by_current_throughput(self):
         listed = uni.build_client_list(CLIENTS)
         self.assertEqual(listed[0]["name"], "laptop")
+
+
+class TestUntrustedNames(unittest.TestCase):
+    """Client names are chosen by the client (DHCP option 12), so they are
+    attacker-controlled on any network with an untrusted device on it."""
+
+    def test_control_characters_are_stripped(self):
+        hostile = [{"mac": "aa:bb:cc:dd:ee:ff", "hostname": "NAS\nFAKE ROW",
+                    "is_wired": True, "ip": "192.168.1.5"}]
+        name = uni.build_client_list(hostile)[0]["name"]
+        self.assertNotIn("\n", name)
+        self.assertEqual(name, "NASFAKE ROW")
+
+    def test_markup_is_preserved_verbatim_not_stripped(self):
+        # The QML renders PlainText, so markup must show as literal text
+        # rather than be silently mangled here.
+        hostile = [{"mac": "aa:bb:cc:dd:ee:ff", "hostname": "<b>Router</b>",
+                    "is_wired": True}]
+        self.assertEqual(uni.build_client_list(hostile)[0]["name"], "<b>Router</b>")
+
+    def test_absurdly_long_names_are_capped(self):
+        hostile = [{"mac": "aa:bb:cc:dd:ee:ff", "hostname": "A" * 5000,
+                    "is_wired": True}]
+        self.assertEqual(len(uni.build_client_list(hostile)[0]["name"]), 64)
+
+    def test_device_names_are_cleaned_too(self):
+        devices = uni.build_devices([
+            {"mac": "aa:bb:cc:dd:ee:01", "name": "Switch\u0000\u009b", "type": "usw",
+             "state": 1, "system-stats": {}}])
+        self.assertEqual(devices["list"][0]["name"], "Switch")
+
+    def test_blank_name_falls_back(self):
+        hostile = [{"mac": "aa:bb:cc:dd:ee:ff", "hostname": "\n\n", "is_wired": True}]
+        self.assertEqual(uni.build_client_list(hostile)[0]["name"], "Unknown")
 
 
 class TestAlerts(unittest.TestCase):
