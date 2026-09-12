@@ -53,7 +53,6 @@ BarWidget {
     return parts.length ? icon + "  " + parts.join(" ") : icon
   }
 
-  readonly property bool iconOnly: configured && displayText === icon
 
   // Shape contract for Bar.findPanelWidget popout routing.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -112,11 +111,11 @@ BarWidget {
     text: root.vertical ? root.icon : root.displayText
     labelVisible: true
     hasVisualContent: text !== ""
-    horizontalMargin: 8.75
+    // 8.75 is the stock bar margin; this glyph is wider than most and was
+    // crowding its neighbour, so it gets half again as much on each side.
+    // (Note: WidgetButton ignores this entirely if fixedWidth is set.)
+    horizontalMargin: 13.125
     verticalPadding: 8.75
-    // Icon-only is the default, and then this should sit in the same slot as
-    // the tray, audio and power icons rather than in a text-sized box.
-    fixedWidth: root.vertical || !root.iconOnly ? -1 : Style.bar.statusSlot
 
     // Trouble is worth a colour change; everything else stays in the theme's
     // normal foreground so a healthy network is visually quiet. `active`
