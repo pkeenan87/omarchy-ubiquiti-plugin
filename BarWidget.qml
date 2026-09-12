@@ -111,10 +111,12 @@ BarWidget {
     text: root.vertical ? root.icon : root.displayText
     labelVisible: true
     hasVisualContent: text !== ""
-    // 8.75 is the stock bar margin; this glyph is wider than most and was
-    // crowding its neighbour, so it gets half again as much on each side.
-    // (Note: WidgetButton ignores this entirely if fixedWidth is set.)
-    horizontalMargin: 13.125
+    // Tuned against a screenshot: 26px between this glyph and the icon beside
+    // it, against 24-32px for the bar's other pairs. On a 2x display the gap
+    // only lands on even numbers, so 26 is as close to mid-range as it gets;
+    // the next step down is 24. The stock 8.75 leaves this glyph crowded, as
+    // it is wider than most. (WidgetButton ignores this if fixedWidth is set.)
+    horizontalMargin: 9.625
     verticalPadding: 8.75
 
     // Trouble is worth a colour change; everything else stays in the theme's
