@@ -58,11 +58,18 @@ def load_config() -> dict:
         pass
     except (OSError, ValueError) as exc:
         raise SystemExit(f"{APP}: cannot read {CONFIG_PATH}: {exc}")
-    # Env overrides make this scriptable and keep the key out of argv.
+    # UNIFI_API_KEY is deliberately not supported: exporting a full-admin
+    # credential puts it in /proc/*/environ for every process the user runs
+    # and in the environment of everything this CLI spawns. Point at a
+    # different config file instead.
+    if os.environ.get("UNIFI_API_KEY_FILE"):
+        try:
+            with open(os.environ["UNIFI_API_KEY_FILE"], "r", encoding="utf-8") as fh:
+                cfg["apiKey"] = fh.read().strip()
+        except OSError as exc:
+            raise SystemExit(f"{APP}: cannot read UNIFI_API_KEY_FILE: {exc}")
     if os.environ.get("UNIFI_HOST"):
         cfg["host"] = os.environ["UNIFI_HOST"]
-    if os.environ.get("UNIFI_API_KEY"):
-        cfg["apiKey"] = os.environ["UNIFI_API_KEY"]
     if os.environ.get("UNIFI_SITE"):
         cfg["site"] = os.environ["UNIFI_SITE"]
     return cfg
@@ -427,15 +434,25 @@ def build_client_list(clients: list) -> list:
 
 
 def build_alerts(wan: dict, devices: dict) -> list:
+    """Things that are wrong right now. These colour the bar."""
     alerts = []
     if not wan["up"]:
         alerts.append("Internet is down")
     if devices["offline"]:
         noun = "device" if devices["offline"] == 1 else "devices"
         alerts.append(f"{devices['offline']} {noun} offline")
-    if devices["updatable"]:
-        alerts.append(f"{devices['updatable']} firmware update(s) available")
     return alerts
+
+
+def build_notices(devices: dict) -> list:
+    """Things worth knowing but not worth an urgent bar. A deferred firmware
+    update is a normal state to sit in for months; it should not look
+    identical to the internet being down."""
+    notices = []
+    if devices["updatable"]:
+        count = devices["updatable"]
+        notices.append(f"{count} firmware update{'s' if count != 1 else ''} available")
+    return notices
 
 
 def collect(api: UniFi) -> dict:
@@ -444,15 +461,17 @@ def collect(api: UniFi) -> dict:
     subs = _subsystems(health)
 
     # A failure to list clients or devices should degrade the panel, not
-    # blank it - health alone still drives the bar widget.
+    # blank it - health alone still drives the bar widget. Record which parts
+    # are missing so the panel can say so instead of just showing nothing.
+    partial = []
     try:
         clients = api.legacy("stat/sta")
     except UniFiError:
-        clients = []
+        clients, _ = [], partial.append("clients")
     try:
         devices = api.legacy("stat/device")
     except UniFiError:
-        devices = []
+        devices, _ = [], partial.append("devices")
 
     blocked = []
     try:
@@ -483,6 +502,8 @@ def collect(api: UniFi) -> dict:
         "blockedList": sorted(blocked, key=lambda b: b["name"].lower()),
         "devices": device_info,
         "alerts": build_alerts(wan, device_info),
+        "notices": build_notices(device_info),
+        "partial": partial,
     }
 
 
@@ -509,7 +530,10 @@ def error_state(api: UniFi, message: str) -> dict:
     previous = read_state()
     return {
         "schema": 1,
-        "updatedAt": time.time(),
+        # The carried-over reading is as old as it was; stamping "now" here
+        # made a week-old snapshot report itself as "updated 0m ago".
+        "updatedAt": previous.get("updatedAt", 0) or time.time(),
+        "lastAttemptAt": time.time(),
         "ok": False,
         "error": message,
         "configured": bool(getattr(api, "host", "") and getattr(api, "key", "")),
@@ -524,6 +548,7 @@ def error_state(api: UniFi, message: str) -> dict:
         "blockedList": previous.get("blockedList", []),
         "devices": previous.get("devices", {}),
         "alerts": [message],
+        "notices": previous.get("notices", []),
         "stale": True,
     }
 
@@ -557,6 +582,16 @@ def human_uptime(seconds: float) -> str:
 # commands
 
 
+def _pause() -> None:
+    """Hold a terminal open. The panel launches setup in a fresh window, and
+    a failure message is unreadable if the window closes with it."""
+    if sys.stdin.isatty():
+        try:
+            input("\nPress Enter to close. ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+
 def cmd_setup(args) -> int:
     cfg = load_config()
     print("UniFi console setup\n")
@@ -587,6 +622,7 @@ def cmd_setup(args) -> int:
         except UniFiError as exc:
             print(f"  failed: {exc}", file=sys.stderr)
             print("\nNothing was saved.", file=sys.stderr)
+            _pause()
             return 1
         save_certificate(pem)
         print(f"  pinned {certificate_fingerprint(pem)[:29]}...")
@@ -599,6 +635,7 @@ def cmd_setup(args) -> int:
         print(f"  failed: {exc}", file=sys.stderr)
         print("\nNothing was saved. Run setup again once the details are right.",
               file=sys.stderr)
+        _pause()
         return 1
 
     save_config(cfg)
@@ -621,12 +658,16 @@ def _enable_polling() -> None:
                            capture_output=True)
     if probe.returncode != 0:
         return
-    result = subprocess.run(["systemctl", "--user", "enable", "--now", unit],
+    subprocess.run(["systemctl", "--user", "enable", unit], capture_output=True)
+    # Restart, not just start: an already-running daemon holds the previous
+    # host, key and certificate pin in memory, so a re-run of setup would
+    # otherwise be overwritten by the old process within one poll interval.
+    result = subprocess.run(["systemctl", "--user", "restart", unit],
                             capture_output=True, text=True)
     if result.returncode == 0:
-        print("Background polling enabled (systemctl --user status omarchy-unifi).")
+        print("Background polling restarted (systemctl --user status omarchy-unifi).")
     else:
-        print(f"Could not enable {unit}: {result.stderr.strip()}", file=sys.stderr)
+        print(f"Could not start {unit}: {result.stderr.strip()}", file=sys.stderr)
 
 
 def cmd_trust_cert(args) -> int:
@@ -726,14 +767,23 @@ def cmd_poll(args) -> int:
 
 
 def cmd_daemon(args) -> int:
-    cfg = load_config()
-    interval = max(3, int(_num(cfg.get("pollIntervalSec"), 10)))
-    api = UniFi(cfg)
+    api = None
+    interval = 10
     while True:
         try:
+            # Re-read every tick so an edited host, key, interval or a re-pinned
+            # certificate takes effect without needing a restart.
+            cfg = load_config()
+            interval = max(3, int(_num(cfg.get("pollIntervalSec"), 10)))
+            api = UniFi(cfg)
             write_state(collect(api))
         except UniFiError as exc:
             write_state(error_state(api, str(exc)))
+        except SystemExit as exc:
+            # A malformed config used to exit here, and Restart=always turned
+            # that into a silent 10s crash loop with nothing on screen to
+            # explain it. Report it in the state file and keep waiting.
+            write_state(error_state(api, str(exc) or "configuration unreadable"))
         except Exception as exc:  # keep the daemon alive through surprises
             write_state(error_state(api, f"unexpected error: {exc}"))
         time.sleep(interval)
@@ -761,9 +811,11 @@ def cmd_status(args) -> int:
     print(f"devices    {devices.get('online', 0)}/{devices.get('total', 0)} online")
     for alert in state.get("alerts", []):
         print(f"  ! {alert}")
+    for notice in state.get("notices", []):
+        print(f"  - {notice}")
     if state.get("stale"):
         age = human_uptime(time.time() - state.get("updatedAt", 0))
-        print(f"  ! data is stale ({age} old)")
+        print(f"  ! console unreachable; reading above is {age} old")
     return 0
 
 
@@ -826,7 +878,9 @@ def cmd_speedtest(args) -> int:
         try:
             rows = api.legacy("cmd/devmgr", {"cmd": "speedtest-status"})
             status = rows[0] if rows else {}
-            if str(status.get("speedtest_status") or "").lower() in ("success", "done", ""):
+            # Only a positive verdict ends the wait. Treating "" as done
+            # returned the *previous* run's numbers seconds after starting.
+            if str(status.get("speedtest_status") or "").lower() in ("success", "done"):
                 break
         except UniFiError:
             break

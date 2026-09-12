@@ -22,7 +22,10 @@ Panel {
   readonly property string home: Quickshell.env("HOME")
   readonly property string stateHome: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state")
   readonly property string statePath: stateHome + "/omarchy-unifi/state.json"
-  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace("file://", "")
+  // decodeURIComponent: resolvedUrl percent-encodes, so a home directory with
+  // a space produced a path that does not exist and actions failed silently.
+  readonly property string pluginDir: decodeURIComponent(
+    String(Qt.resolvedUrl(".")).replace("file://", ""))
   readonly property string cli: pluginDir + "bin/omarchy-unifi"
 
   property var state: ({})
@@ -42,6 +45,8 @@ Panel {
   readonly property var clientList: state && state.clientList ? state.clientList : []
   readonly property var blockedList: state && state.blockedList ? state.blockedList : []
   readonly property var alerts: state && state.alerts ? state.alerts : []
+  readonly property var notices: state && state.notices ? state.notices : []
+  readonly property var partial: state && state.partial ? state.partial : []
 
   // An empty state file means the CLI has never run; that is a setup
   // problem, not a network problem, and the panel says so differently.
@@ -54,7 +59,9 @@ Panel {
   // Learned from the console the first time a speed test is refused: some
   // gateways (the USG family) cannot run one on the controller's behalf.
   readonly property bool speedtestSupported: !state || state.speedtestSupported !== false
-  readonly property bool healthy: configured && !stale && wanUp && alerts.length === 0
+  // Deliberately excludes `stale` and `notices`: a dropped poll gets the bar's
+  // quiet dot, and a deferred firmware update should not look like an outage.
+  readonly property bool healthy: configured && wanUp && alerts.length === 0
 
   readonly property string barTooltip: {
     if (!configured) return "UniFi Network — not set up yet"
@@ -164,8 +171,13 @@ Panel {
   }
 
   function runSpeedtest() {
+    if (speedtestProcess.running) return
     root.speedtestRunning = true
-    runAction(["speedtest", "--wait"], "Running speed test")
+    root.actionError = ""
+    // Its own Process: a speed test can run for two minutes, and sharing the
+    // action process would lock every other button for the duration.
+    speedtestProcess.command = [root.cli, "speedtest", "--wait"]
+    speedtestProcess.running = true
   }
 
   function openConsole() {
@@ -190,13 +202,29 @@ Panel {
     onLoadFailed: root.state = ({})
   }
 
-  // Polling only needs to be brisk while someone is looking at the panel;
-  // the rest of the time the systemd timer keeps the bar label fresh.
+  // If the daemon is running, its writes arrive through FileView and a second
+  // loop here only doubles the request rate against the console and gives
+  // state.json two concurrent writers. So poll from the panel only when the
+  // daemon is not running, plus once on open so a long-shut panel is current.
+  property bool daemonRunning: false
+
+  Process {
+    id: daemonCheck
+    running: false
+    command: ["systemctl", "--user", "is-active", "--quiet", "omarchy-unifi.service"]
+    onExited: function(exitCode) { root.daemonRunning = exitCode === 0 }
+  }
+
+  onOpenedChanged: {
+    if (!opened) return
+    if (!daemonCheck.running) daemonCheck.running = true
+    root.reloadState()
+  }
+
   Timer {
     interval: root.refreshSeconds * 1000
     repeat: true
-    running: root.opened
-    triggeredOnStart: true
+    running: root.opened && !root.daemonRunning
     onTriggered: root.reloadState()
   }
 
@@ -207,6 +235,21 @@ Panel {
   }
 
   Process { id: launchProcess; running: false }
+
+  Process {
+    id: speedtestProcess
+    running: false
+    stderr: StdioCollector {
+      onStreamFinished: {
+        var message = text.trim()
+        if (message !== "") root.actionError = message
+      }
+    }
+    onExited: {
+      root.speedtestRunning = false
+      stateFile.reload()
+    }
+  }
 
   Process {
     id: actionProcess
@@ -231,41 +274,22 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color surface: Util.alpha(foreground, 0.05)
 
-  // Small text button used across the header and the setup card.
-  component ActionButton: Rectangle {
-    id: actionButton
+  // Small text button used across the header and the setup card. Wraps the
+  // shared Ui/Button so hover, pressed and focus fills come from the theme's
+  // control tokens rather than from alpha values hardcoded here.
+  component ActionButton: Button {
     property string label: ""
     property bool outlined: false
-    property bool enabled: true
     signal triggered()
 
-    implicitWidth: buttonLabel.implicitWidth + Style.space(16)
-    implicitHeight: buttonLabel.implicitHeight + Style.space(8)
-    radius: Style.cornerRadius
-    color: outlined
-      ? "transparent"
-      : Util.alpha(root.foreground, buttonMouse.containsMouse && enabled ? 0.16 : 0.08)
-    border.width: outlined ? 1 : 0
-    border.color: Util.alpha(root.foreground, 0.3)
+    text: label
+    bordered: outlined
+    foreground: root.foreground
+    accent: Color.accent
+    fontFamily: root.fontFamily
+    fontSize: Style.font.bodySmall
     opacity: enabled ? 1 : 0.4
-
-    Text {
-      textFormat: Text.PlainText
-      id: buttonLabel
-      anchors.centerIn: parent
-      text: actionButton.label
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-    }
-
-    MouseArea {
-      id: buttonMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: actionButton.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-      onClicked: if (actionButton.enabled) actionButton.triggered()
-    }
+    onClicked: if (enabled) triggered()
   }
 
   // A filled dot reads as "online" faster than any word does.
@@ -292,8 +316,24 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: confirm.opened ? confirm.opened = false : root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+
+      // While the dialog is up it owns the keyboard. Without this, Enter did
+      // nothing and Tab switched bar panels out from under an open
+      // confirmation, leaving it armed with its callback intact.
+      onCloseRequested: confirm.opened ? confirm.canceled() : root.close()
+      onTabRequested: function(direction) {
+        if (confirm.opened) confirm.selectedIndex = confirm.selectedIndex === 0 ? 1 : 0
+        else root.switchPanel(direction)
+      }
+      onMoveRequested: function(dx, dy) {
+        if (confirm.opened && dx !== 0)
+          confirm.selectedIndex = confirm.selectedIndex === 0 ? 1 : 0
+      }
+      onActivateRequested: {
+        if (!confirm.opened) return
+        if (confirm.selectedIndex === 0) confirm.canceled()
+        else confirm.confirmed()
+      }
 
       Column {
         id: panelBody
@@ -332,7 +372,7 @@ Panel {
               visible: root.configured && root.speedtestSupported
               label: root.speedtestRunning ? "Testing…" : "Speed test"
               outlined: true
-              enabled: !actionProcess.running
+              enabled: !root.speedtestRunning
               onTriggered: root.runSpeedtest()
             }
 
@@ -415,10 +455,12 @@ Panel {
             PanelHero {
               visible: root.configured
               width: parent.width
-              foreground: root.wanUp ? root.foreground : root.urgent
+              foreground: root.wanUp && !root.stale ? root.foreground : root.urgent
               fontFamily: root.fontFamily
-              title: root.wanUp ? "Internet up" : "Internet down"
+              title: root.stale ? "Console unreachable"
+                   : (root.wanUp ? "Internet up" : "Internet down")
               meta: {
+                if (root.stale) return "last reading " + root.relativeAge(root.state.updatedAt)
                 if (!root.wanUp) return root.state.error || "No WAN connectivity"
                 var parts = []
                 if (root.wan.ip) parts.push(root.wan.ip)
@@ -473,7 +515,72 @@ Panel {
               }
             }
 
-            // ---- action feedback ----
+                // Last speed-test result, shown whether or not this session ran
+            // it: the CLI has always recorded it and nothing displayed it.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.configured && root.speedtestSupported
+                       && root.wan.speedtest && root.wan.speedtest.downMbps >= 0
+                       && root.wan.speedtest.ranAt > 0
+              width: parent.width
+              leftPadding: Style.space(14)
+              text: {
+                var t = root.wan.speedtest
+                if (!t) return ""
+                var parts = ["speed test " + t.downMbps.toFixed(1) + " ↓ "
+                           + t.upMbps.toFixed(1) + " ↑ Mbps"]
+                if (t.latencyMs >= 0) parts.push(Math.round(t.latencyMs) + " ms")
+                parts.push(root.relativeAge(t.ranAt))
+                return parts.join("  ·  ")
+              }
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            // A device or client fetch that failed used to hide its whole
+            // section, leaving a hero and nothing else with no explanation.
+            Text {
+              textFormat: Text.PlainText
+              visible: root.configured && root.partial.length > 0
+              width: parent.width
+              leftPadding: Style.space(14)
+              text: root.partial.join(" and ") + " could not be listed this poll"
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // ---- notices (informational; never urgent) ----
+            Repeater {
+              model: root.configured ? root.notices : []
+
+              Rectangle {
+                required property string modelData
+                width: content.width
+                height: noticeText.implicitHeight + Style.space(12)
+                radius: Style.cornerRadius
+                color: root.surface
+
+                Text {
+                  id: noticeText
+                  textFormat: Text.PlainText
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(10)
+                  text: parent.modelData
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
+
+        // ---- action feedback ----
             Text {
               textFormat: Text.PlainText
               visible: root.busyLabel !== "" || root.actionError !== ""
@@ -566,11 +673,15 @@ Panel {
                     id: deviceActions
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(4)
-                    // Actions appear on hover so a glance at the list stays calm.
-                    opacity: deviceMouse.containsMouse ? 1 : 0
+                    // Visible at rest so the row reads as actionable, and
+                    // full strength on hover. Fully hidden meant nothing
+                    // signalled that these rows do anything at all.
+                    opacity: deviceMouse.containsMouse ? 1 : 0.35
 
                     PanelActionButton {
                       iconText: ""
+                      // The console cannot restart a device that is offline.
+                      visible: deviceRow.modelData.online
                       tooltipText: "Restart " + deviceRow.modelData.name
                       foreground: root.foreground
                       fontFamily: root.fontFamily
@@ -660,7 +771,7 @@ Panel {
                     id: clientActions
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(4)
-                    opacity: clientMouse.containsMouse ? 1 : 0
+                    opacity: clientMouse.containsMouse ? 1 : 0.35
 
                     PanelActionButton {
                       iconText: ""
@@ -687,9 +798,12 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              visible: root.configured && root.clientList.length > root.maxClients
+              // clientList is capped at 100 by the CLI, so subtracting from it
+              // under-reported once a network had more clients than that.
+              visible: root.configured && (root.clients.total || 0) > root.maxClients
               width: parent.width
-              text: "+ " + (root.clientList.length - root.maxClients) + " more"
+              text: "+ " + ((root.clients.total || 0) - root.maxClients)
+                  + " more · omarchy-unifi clients"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

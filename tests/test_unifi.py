@@ -11,6 +11,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 BIN = pathlib.Path(__file__).resolve().parent.parent / "bin" / "omarchy-unifi"
@@ -229,6 +230,27 @@ class TestAlerts(unittest.TestCase):
         alerts = uni.build_alerts({"up": True}, devices)
         self.assertIn("2 devices offline", alerts)
 
+    def test_firmware_updates_are_notices_not_alerts(self):
+        # A deferred update is a normal state to sit in for months; it must
+        # not colour the bar the same as an outage.
+        devices = uni.build_devices(DEVICES)
+        alerts = uni.build_alerts({"up": True}, devices)
+        notices = uni.build_notices(devices)
+        self.assertEqual([a for a in alerts if "firmware" in a], [])
+        self.assertEqual(notices, ["1 firmware update available"])
+
+    def test_notice_plural_agreement(self):
+        devices = uni.build_devices(DEVICES)
+        devices["updatable"] = 3
+        self.assertEqual(uni.build_notices(devices), ["3 firmware updates available"])
+
+    def test_healthy_network_has_neither(self):
+        devices = uni.build_devices(DEVICES[:2])
+        devices["offline"] = 0
+        devices["updatable"] = 0
+        self.assertEqual(uni.build_alerts({"up": True}, devices), [])
+        self.assertEqual(uni.build_notices(devices), [])
+
 
 class TestApiErrors(unittest.TestCase):
     class FakeHttpError:
@@ -282,6 +304,18 @@ class TestStatePersistence(unittest.TestCase):
             self.assertEqual(mode, 0o600)
             self.assertTrue(uni.read_state()["ok"])
 
+    def test_error_state_keeps_the_original_reading_age(self):
+        # Stamping "now" on a failed poll made week-old data report itself as
+        # "updated 0m ago".
+        with tempfile.TemporaryDirectory() as tmp:
+            uni.STATE_DIR, uni.STATE_PATH = tmp, os.path.join(tmp, "state.json")
+            old_time = time.time() - 86400
+            uni.write_state({"updatedAt": old_time, "wan": {"up": True}})
+            state = uni.error_state(
+                uni.UniFi({"host": "h", "apiKey": "k"}), "cannot reach h")
+            self.assertEqual(state["updatedAt"], old_time)
+            self.assertGreater(state["lastAttemptAt"], old_time)
+
     def test_error_state_preserves_last_good_reading(self):
         with tempfile.TemporaryDirectory() as tmp:
             uni.STATE_DIR = tmp
@@ -311,6 +345,36 @@ class TestStatePersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             uni.STATE_PATH = os.path.join(tmp, "nope.json")
             self.assertEqual(uni.read_state(), {})
+
+
+class TestConfigAndDaemonSafety(unittest.TestCase):
+    def test_api_key_env_override_is_not_honoured(self):
+        # A full-admin credential in the environment is readable in
+        # /proc/*/environ and inherited by every spawned process.
+        os.environ["UNIFI_API_KEY"] = "leaked-via-environment"
+        try:
+            self.assertNotEqual(uni.load_config().get("apiKey"),
+                                "leaked-via-environment")
+        finally:
+            del os.environ["UNIFI_API_KEY"]
+
+    def test_api_key_file_override_is_honoured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "key")
+            with open(path, "w") as fh:
+                fh.write("from-a-file\n")
+            os.environ["UNIFI_API_KEY_FILE"] = path
+            try:
+                self.assertEqual(uni.load_config()["apiKey"], "from-a-file")
+            finally:
+                del os.environ["UNIFI_API_KEY_FILE"]
+
+    def test_error_state_tolerates_a_missing_client(self):
+        # The daemon can fail before it constructs one (unreadable config).
+        state = uni.error_state(None, "configuration unreadable")
+        self.assertFalse(state["ok"])
+        self.assertFalse(state["configured"])
+        self.assertEqual(state["alerts"], ["configuration unreadable"])
 
 
 class TestClient(unittest.TestCase):
