@@ -9,7 +9,7 @@ plugin_dir="$HOME/.config/omarchy/plugins/$plugin_id"
 
 mkdir -p "$plugin_dir"
 
-for file in manifest.json BarWidget.qml Panel.qml LICENSE README.md; do
+for file in manifest.json BarWidget.qml Panel.qml LICENSE README.md preview.png; do
   if [[ $source_dir/$file != "$plugin_dir/$file" ]]; then
     install -m 644 "$source_dir/$file" "$plugin_dir/$file"
   fi

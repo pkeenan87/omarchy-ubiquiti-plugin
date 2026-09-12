@@ -35,6 +35,23 @@ it before closing the dialog.
 Setup verifies the connection before saving anything, then enables the
 background poller. If it cannot connect, nothing is written.
 
+## Removing it
+
+```bash
+./uninstall.sh
+```
+
+`omarchy plugin remove` deletes the plugin directory only. This plugin also
+installs a systemd user service, a CLI symlink, a config file holding your API
+key, and a state file listing your network — so removing it through the plugin
+manager alone leaves a poller enabled against a binary that no longer exists,
+and your credentials on disk.
+
+`uninstall.sh` stops and removes the service, removes the symlink and the
+plugin, and asks whether to delete the API key, the pinned certificate, and
+the state file. `--purge` answers yes, `--keep-config` answers no. Revoke the
+key on the console afterwards — deleting the local copy does not revoke it.
+
 ## What you get
 
 **In the bar.** One icon, refreshed by a background service. The label turns urgent when the internet drops or a device goes
@@ -172,7 +189,16 @@ client or break the layout.
 
 - A UniFi OS console (Network 9.0 or newer for API keys)
 - Omarchy with the Quickshell-based shell
-- Python 3.9+ (already present on Omarchy)
+
+External dependencies, all already present on Omarchy:
+
+| Used | For |
+|------|-----|
+| `python3` (3.9+, stdlib only) | the poller and CLI — no pip packages |
+| `systemd --user` | running the poller in the background |
+| `xdg-terminal-exec` | opening a terminal for `setup` from the panel |
+| `xdg-open` | the Console button |
+| `openssl` | tests only, to generate a stub console certificate |
 
 A self-hosted UniFi Network Application that is *not* running on UniFi OS does
 not support API keys and will not work with this plugin.

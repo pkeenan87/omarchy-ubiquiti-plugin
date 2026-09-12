@@ -62,6 +62,9 @@ BarWidget {
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+  // The published bar-widget contract names toggle(); first-party widgets use
+  // togglePanel(). Expose both so either caller works.
+  function toggle() { togglePanel() }
   function closeForPopoutSwitch() {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
