@@ -51,10 +51,15 @@ every adopted device with its kind, address, client count and firmware state;
 the busiest clients with signal quality and current throughput; and anything
 you have blocked.
 
-Hovering a row reveals its actions. Devices can be restarted. Clients can be
-reconnected or blocked, and blocked clients unblocked. Restarting and blocking
-ask for confirmation first; reconnecting does not, because a client normally
-comes straight back.
+Hovering a row brings its actions to full strength. Devices can be restarted.
+Clients can be reconnected or blocked, and blocked clients unblocked.
+Restarting and blocking ask for confirmation first; reconnecting does not,
+because a client normally comes straight back.
+
+Reconnect disconnects the client and lets it reassociate — a phone is usually
+back within a second, so there is nothing to watch. Every action confirms
+itself in the panel for a few seconds afterwards, because most of them
+succeed invisibly and silence reads as failure.
 
 ## Configuration
 

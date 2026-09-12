@@ -31,6 +31,11 @@ Panel {
   property var state: ({})
   property string actionError: ""
   property string busyLabel: ""
+  // Confirmation of the last completed action. Several of these succeed
+  // invisibly - a kicked client reassociates within a second, so the panel
+  // looks identical before and after - and silence reads as failure.
+  property string actionNotice: ""
+  property string pendingNotice: ""
 
   readonly property int refreshSeconds: Math.max(3, setting("refreshIntervalSec", 10))
   readonly property int maxClients: Math.max(3, setting("maxClients", 25))
@@ -134,10 +139,12 @@ Panel {
 
   // ---- actions -------------------------------------------------------
 
-  function runAction(args, label) {
+  function runAction(args, label, doneLabel) {
     if (actionProcess.running) return
     root.actionError = ""
+    root.actionNotice = ""
     root.busyLabel = label
+    root.pendingNotice = doneLabel || ""
     actionProcess.command = [root.cli].concat(args)
     actionProcess.running = true
   }
@@ -145,25 +152,29 @@ Panel {
   function restartDevice(device) {
     confirm.message = "Restart " + device.name + "?\nIt will drop off the network for a minute."
     confirm.confirmText = "Restart"
-    confirm.onAccept = function() { runAction(["restart", device.mac], "Restarting " + device.name) }
+    confirm.onAccept = function() { runAction(["restart", device.mac], "Restarting " + device.name,
+                                        device.name + " is restarting · back in about a minute") }
     confirm.opened = true
   }
 
   function blockClient(client) {
     confirm.message = "Block " + client.name + "?\nIt stays blocked until you unblock it here."
     confirm.confirmText = "Block"
-    confirm.onAccept = function() { runAction(["block", client.mac], "Blocking " + client.name) }
+    confirm.onAccept = function() { runAction(["block", client.mac], "Blocking " + client.name,
+                                      client.name + " blocked") }
     confirm.opened = true
   }
 
   function kickClient(client) {
     // Reconnecting is not destructive - most clients come straight back -
     // so this one does not need a confirmation step.
-    runAction(["kick", client.mac], "Reconnecting " + client.name)
+    runAction(["kick", client.mac], "Reconnecting " + client.name,
+              client.name + " was disconnected · it rejoins on its own")
   }
 
   function unblockClient(entry) {
-    runAction(["unblock", entry.mac], "Unblocking " + entry.name)
+    runAction(["unblock", entry.mac], "Unblocking " + entry.name,
+              entry.name + " unblocked")
   }
 
   function openConsole() {
@@ -222,6 +233,12 @@ Panel {
 
   Process { id: launchProcess; running: false }
 
+  Timer {
+    id: noticeTimer
+    interval: 5000
+    onTriggered: root.actionNotice = ""
+  }
+
   Process {
     id: actionProcess
     running: false
@@ -233,7 +250,11 @@ Panel {
     }
     onExited: function(exitCode) {
       root.busyLabel = ""
-      if (exitCode === 0) root.actionError = ""
+      if (exitCode === 0) {
+        root.actionError = ""
+        root.actionNotice = root.pendingNotice
+        noticeTimer.restart()
+      }
       stateFile.reload()
     }
   }
@@ -524,8 +545,11 @@ Panel {
             Text {
               textFormat: Text.PlainText
               visible: root.busyLabel !== "" || root.actionError !== ""
+                       || root.actionNotice !== ""
               width: parent.width
-              text: root.actionError !== "" ? root.actionError : root.busyLabel + "…"
+              text: root.actionError !== "" ? root.actionError
+                  : (root.busyLabel !== "" ? root.busyLabel + "…"
+                                           : root.actionNotice)
               color: root.actionError !== "" ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -715,7 +739,8 @@ Panel {
 
                     PanelActionButton {
                       iconText: ""
-                      tooltipText: "Reconnect " + clientRow.modelData.name
+                      tooltipText: "Disconnect " + clientRow.modelData.name
+                                 + " — it rejoins immediately"
                       foreground: root.foreground
                       fontFamily: root.fontFamily
                       enabled: !actionProcess.running
