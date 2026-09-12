@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "keenan.unifi-network",
+  "name": "UniFi Network",
+  "version": "1.0.0",
+  "author": "Patrick Keenan",
+  "license": "MIT",
+  "description": "Live WAN status, client counts, and device health from a UniFi OS console, with restart, block, and speed test actions in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "UniFi Network",
+    "description": "Watch your UniFi gateway, switches, access points, and clients.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 10,
+      "maxClients": 25,
+      "showThroughput": true,
+      "showClients": true
+    },
+    "schema": [
+      {
+        "key": "showClients",
+        "type": "boolean",
+        "label": "Show client count in the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "showThroughput",
+        "type": "boolean",
+        "label": "Show WAN throughput in the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while the panel is open (seconds)",
+        "min": 3,
+        "max": 300,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "maxClients",
+        "type": "integer",
+        "label": "Clients listed in the panel",
+        "min": 3,
+        "max": 50,
+        "step": 1,
+        "defaultValue": 25
+      }
+    ]
+  }
+}

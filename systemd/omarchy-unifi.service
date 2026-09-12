@@ -1,0 +1,27 @@
+[Unit]
+Description=Poll a UniFi OS console for the Omarchy bar
+Documentation=https://github.com/keenan/omarchy-plugin-unifi
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/omarchy/plugins/keenan.unifi-network/bin/omarchy-unifi daemon
+Restart=always
+RestartSec=10
+# The console credential and the polled state are both private to the user.
+UMask=0077
+# This talks to one host on the LAN and writes two files; it needs nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/omarchy-unifi
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

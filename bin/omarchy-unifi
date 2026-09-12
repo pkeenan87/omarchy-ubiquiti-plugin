@@ -1,0 +1,687 @@
+#!/usr/bin/env python3
+"""omarchy-unifi - talk to a UniFi OS console for the Omarchy bar plugin.
+
+Data flows one way: this CLI polls the console and writes a state file that
+the QML panel reads. Actions flow the other way: the panel shells out to
+this CLI. Nothing in the shell process speaks HTTP.
+
+Stdlib only - no pip install, no node, nothing to keep updated.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+
+APP = "omarchy-unifi"
+
+CONFIG_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), APP
+)
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), APP
+)
+STATE_PATH = os.path.join(STATE_DIR, "state.json")
+
+DEFAULT_CONFIG = {
+    "host": "",
+    "apiKey": "",
+    "site": "default",
+    "verifySsl": False,
+    "pollIntervalSec": 10,
+    "timeoutSec": 6,
+}
+
+
+# --------------------------------------------------------------------------
+# config
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+            cfg.update(json.load(fh))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"{APP}: cannot read {CONFIG_PATH}: {exc}")
+    # Env overrides make this scriptable and keep the key out of argv.
+    if os.environ.get("UNIFI_HOST"):
+        cfg["host"] = os.environ["UNIFI_HOST"]
+    if os.environ.get("UNIFI_API_KEY"):
+        cfg["apiKey"] = os.environ["UNIFI_API_KEY"]
+    if os.environ.get("UNIFI_SITE"):
+        cfg["site"] = os.environ["UNIFI_SITE"]
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    tmp = CONFIG_PATH + ".tmp"
+    # The API key is a bearer credential for the whole console. Never let it
+    # land on disk group/world readable, not even briefly.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, CONFIG_PATH)
+    os.chmod(CONFIG_PATH, 0o600)
+
+
+# --------------------------------------------------------------------------
+# api client
+
+
+class UniFiError(Exception):
+    def __init__(self, message: str, status: int = 0):
+        super().__init__(message)
+        self.status = status
+
+
+class UniFi:
+    """Thin UniFi OS client.
+
+    Reads and writes both go through the legacy `/proxy/network/api` surface,
+    which on UniFi OS accepts the same API key as the Integration API and is
+    the only one exposing health rollups, blocking and speed tests. The
+    Integration API is probed in `doctor` so a key that only works there
+    still produces a useful diagnosis instead of a blank panel.
+    """
+
+    def __init__(self, cfg: dict):
+        self.host = str(cfg.get("host") or "").strip().rstrip("/")
+        for prefix in ("https://", "http://"):
+            if self.host.startswith(prefix):
+                self.host = self.host[len(prefix):]
+        self.key = str(cfg.get("apiKey") or "").strip()
+        self.site = str(cfg.get("site") or "default").strip() or "default"
+        self.timeout = float(cfg.get("timeoutSec") or 6)
+        if cfg.get("verifySsl"):
+            self.ctx = ssl.create_default_context()
+        else:
+            # UniFi consoles ship a self-signed cert for their LAN address;
+            # verification would fail for every normal user.
+            self.ctx = ssl.create_default_context()
+            self.ctx.check_hostname = False
+            self.ctx.verify_mode = ssl.CERT_NONE
+
+    def _call(self, path: str, body=None, method=None) -> dict:
+        if not self.host:
+            raise UniFiError("no host configured; run: omarchy-unifi setup")
+        if not self.key:
+            raise UniFiError("no API key configured; run: omarchy-unifi setup")
+        url = f"https://{self.host}{path}"
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method=method or ("POST" if data else "GET"))
+        req.add_header("X-API-KEY", self.key)
+        req.add_header("Accept", "application/json")
+        if data:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            hint = ""
+            if exc.code in (401, 403):
+                hint = " (API key rejected - check it is a Network API key and not expired)"
+            raise UniFiError(f"HTTP {exc.code} for {path}{hint}", exc.code)
+        except urllib.error.URLError as exc:
+            raise UniFiError(f"cannot reach {self.host}: {exc.reason}")
+        except TimeoutError:
+            raise UniFiError(f"timed out talking to {self.host}")
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise UniFiError(f"non-JSON reply from {path}")
+
+    def legacy(self, endpoint: str, body=None) -> list:
+        out = self._call(f"/proxy/network/api/s/{self.site}/{endpoint}", body)
+        data = out.get("data")
+        return data if isinstance(data, list) else []
+
+    def integration(self, endpoint: str) -> dict:
+        return self._call(f"/proxy/network/integration/v1/{endpoint}")
+
+
+# --------------------------------------------------------------------------
+# state building
+
+
+def _num(value, default=0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _subsystems(health: list) -> dict:
+    out = {}
+    for entry in health:
+        if isinstance(entry, dict) and entry.get("subsystem"):
+            out[str(entry["subsystem"])] = entry
+    return out
+
+
+def build_wan(subs: dict) -> dict:
+    wan = subs.get("wan", {})
+    www = subs.get("www", {})
+    status = str(wan.get("status") or "unknown").lower()
+    # `*_bytes-r` are instantaneous byte-per-second rates from the gateway,
+    # so no delta bookkeeping is needed between polls.
+    return {
+        "status": status,
+        "up": status == "ok",
+        "ip": wan.get("wan_ip") or "",
+        "gatewayMac": wan.get("gw_mac") or "",
+        "gatewayName": wan.get("gw_name") or "",
+        "downBps": _num(wan.get("rx_bytes-r")),
+        "upBps": _num(wan.get("tx_bytes-r")),
+        "latencyMs": _num(www.get("latency"), -1),
+        "uptimeSec": _num(wan.get("uptime") or www.get("uptime")),
+        "isp": wan.get("isp_name") or wan.get("isp_organization") or "",
+        "speedtest": {
+            "downMbps": _num(www.get("xput_down"), -1),
+            "upMbps": _num(www.get("xput_up"), -1),
+            "latencyMs": _num(www.get("speedtest_ping"), -1),
+            "ranAt": _num(www.get("speedtest_lastrun"), 0),
+            "status": str(www.get("speedtest_status") or ""),
+        },
+    }
+
+
+def build_clients(subs: dict, clients: list) -> dict:
+    wireless = sum(1 for c in clients if not c.get("is_wired"))
+    wired = sum(1 for c in clients if c.get("is_wired"))
+    guest = sum(1 for c in clients if c.get("is_guest"))
+    if not clients:
+        # Fall back to the health rollup when the client list is unavailable
+        # but health still reports counts.
+        wireless = int(_num(subs.get("wlan", {}).get("num_user")))
+        wired = int(_num(subs.get("lan", {}).get("num_user")))
+    return {
+        "total": wireless + wired,
+        "wireless": wireless,
+        "wired": wired,
+        "guest": guest,
+    }
+
+
+DEVICE_KIND = {"uap": "Access Point", "usw": "Switch", "ugw": "Gateway", "udm": "Gateway"}
+
+
+def build_devices(devices: list) -> dict:
+    items = []
+    for dev in devices:
+        if not isinstance(dev, dict):
+            continue
+        state = int(_num(dev.get("state")))
+        stats = dev.get("system-stats") or {}
+        items.append({
+            "id": dev.get("_id") or dev.get("mac") or "",
+            "mac": dev.get("mac") or "",
+            "name": dev.get("name") or dev.get("model") or dev.get("mac") or "Unnamed",
+            "model": dev.get("model") or "",
+            "kind": DEVICE_KIND.get(str(dev.get("type") or "").lower(), "Device"),
+            "ip": dev.get("ip") or "",
+            "online": state == 1,
+            "state": state,
+            "version": dev.get("version") or "",
+            "updatable": bool(dev.get("upgradable")),
+            "clients": int(_num(dev.get("num_sta"))),
+            "uptimeSec": _num(dev.get("uptime")),
+            "cpuPct": _num(stats.get("cpu"), -1),
+            "memPct": _num(stats.get("mem"), -1),
+            "satisfaction": _num(dev.get("satisfaction"), -1),
+        })
+    # Offline first so problems surface at the top of the panel list.
+    items.sort(key=lambda d: (d["online"], d["kind"], d["name"].lower()))
+    return {
+        "total": len(items),
+        "online": sum(1 for d in items if d["online"]),
+        "offline": sum(1 for d in items if not d["online"]),
+        "updatable": sum(1 for d in items if d["updatable"]),
+        "list": items,
+    }
+
+
+def build_client_list(clients: list) -> list:
+    items = []
+    for cli in clients:
+        if not isinstance(cli, dict):
+            continue
+        name = (cli.get("name") or cli.get("hostname") or cli.get("oui")
+                or cli.get("mac") or "Unknown")
+        items.append({
+            "mac": cli.get("mac") or "",
+            "name": name,
+            "ip": cli.get("ip") or "",
+            "wired": bool(cli.get("is_wired")),
+            "guest": bool(cli.get("is_guest")),
+            "network": cli.get("network") or "",
+            "essid": cli.get("essid") or "",
+            "signal": _num(cli.get("signal"), 0),
+            "downBps": _num(cli.get("rx_bytes-r")),
+            "upBps": _num(cli.get("tx_bytes-r")),
+            "uptimeSec": _num(cli.get("uptime")),
+            "blocked": False,
+        })
+    items.sort(key=lambda c: (c["downBps"] + c["upBps"]), reverse=True)
+    return items
+
+
+def build_alerts(wan: dict, devices: dict) -> list:
+    alerts = []
+    if not wan["up"]:
+        alerts.append("Internet is down")
+    if devices["offline"]:
+        noun = "device" if devices["offline"] == 1 else "devices"
+        alerts.append(f"{devices['offline']} {noun} offline")
+    if devices["updatable"]:
+        alerts.append(f"{devices['updatable']} firmware update(s) available")
+    return alerts
+
+
+def collect(api: UniFi) -> dict:
+    """Poll the console and shape everything the panel needs."""
+    health = api.legacy("stat/health")
+    subs = _subsystems(health)
+
+    # A failure to list clients or devices should degrade the panel, not
+    # blank it - health alone still drives the bar widget.
+    try:
+        clients = api.legacy("stat/sta")
+    except UniFiError:
+        clients = []
+    try:
+        devices = api.legacy("stat/device")
+    except UniFiError:
+        devices = []
+
+    blocked = []
+    try:
+        for user in api.legacy("rest/user"):
+            if isinstance(user, dict) and user.get("blocked"):
+                blocked.append({
+                    "mac": user.get("mac") or "",
+                    "name": (user.get("name") or user.get("hostname")
+                             or user.get("oui") or user.get("mac") or "Unknown"),
+                })
+    except UniFiError:
+        pass
+
+    wan = build_wan(subs)
+    device_info = build_devices(devices)
+    return {
+        "schema": 1,
+        "updatedAt": time.time(),
+        "ok": True,
+        "error": "",
+        "configured": True,
+        "host": api.host,
+        "site": api.site,
+        "wan": wan,
+        "clients": build_clients(subs, clients),
+        "clientList": build_client_list(clients)[:100],
+        "blockedList": sorted(blocked, key=lambda b: b["name"].lower()),
+        "devices": device_info,
+        "alerts": build_alerts(wan, device_info),
+    }
+
+
+def write_state(state: dict) -> None:
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    # Client names, MACs and IPs are an inventory of the home network.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+    # Atomic swap so the panel's file watcher never observes a partial file.
+    os.replace(tmp, STATE_PATH)
+
+
+def read_state() -> dict:
+    try:
+        with open(STATE_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def error_state(api: UniFi, message: str) -> dict:
+    previous = read_state()
+    return {
+        "schema": 1,
+        "updatedAt": time.time(),
+        "ok": False,
+        "error": message,
+        "configured": bool(getattr(api, "host", "") and getattr(api, "key", "")),
+        "host": getattr(api, "host", ""),
+        "site": getattr(api, "site", "default"),
+        # Keep the last good reading so the panel can show stale data with a
+        # warning rather than an empty screen during a blip.
+        "wan": previous.get("wan", {"status": "unknown", "up": False}),
+        "clients": previous.get("clients", {}),
+        "clientList": previous.get("clientList", []),
+        "blockedList": previous.get("blockedList", []),
+        "devices": previous.get("devices", {}),
+        "alerts": [message],
+        "stale": True,
+    }
+
+
+# --------------------------------------------------------------------------
+# formatting helpers
+
+
+def human_bps(bps: float) -> str:
+    bits = max(0.0, bps) * 8
+    for unit, scale in (("G", 1e9), ("M", 1e6), ("k", 1e3)):
+        if bits >= scale:
+            value = bits / scale
+            return f"{value:.1f}{unit}" if value < 10 else f"{value:.0f}{unit}"
+    return "0"
+
+
+def human_uptime(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+# --------------------------------------------------------------------------
+# commands
+
+
+def cmd_setup(args) -> int:
+    cfg = load_config()
+    print("UniFi console setup\n")
+    print("Create a key in the UniFi Network app:")
+    print("  Settings -> Control Plane -> Integrations -> Create API Key\n")
+
+    host = input(f"Console address [{cfg['host'] or '192.168.1.1'}]: ").strip()
+    cfg["host"] = host or cfg["host"] or "192.168.1.1"
+
+    prompt = "API key" + (" [keep existing]" if cfg["apiKey"] else "") + ": "
+    # getpass keeps the key out of the terminal scrollback and shell history.
+    key = getpass.getpass(prompt).strip()
+    if key:
+        cfg["apiKey"] = key
+    if not cfg["apiKey"]:
+        print("\nAn API key is required.", file=sys.stderr)
+        return 1
+
+    site = input(f"Site name [{cfg['site']}]: ").strip()
+    cfg["site"] = site or cfg["site"]
+
+    print("\nChecking connection...")
+    api = UniFi(cfg)
+    try:
+        state = collect(api)
+    except UniFiError as exc:
+        print(f"  failed: {exc}", file=sys.stderr)
+        print("\nNothing was saved. Run setup again once the details are right.",
+              file=sys.stderr)
+        return 1
+
+    save_config(cfg)
+    write_state(state)
+    print(f"  connected to {cfg['host']} ({state['devices']['total']} devices, "
+          f"{state['clients']['total']} clients)")
+    print(f"\nSaved to {CONFIG_PATH} (permissions 0600).")
+    _enable_polling()
+    return 0
+
+
+def _enable_polling() -> None:
+    """Start the background poller if its unit is installed."""
+    import shutil
+    import subprocess
+    if not shutil.which("systemctl"):
+        return
+    unit = "omarchy-unifi.service"
+    probe = subprocess.run(["systemctl", "--user", "cat", unit],
+                           capture_output=True)
+    if probe.returncode != 0:
+        return
+    result = subprocess.run(["systemctl", "--user", "enable", "--now", unit],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        print("Background polling enabled (systemctl --user status omarchy-unifi).")
+    else:
+        print(f"Could not enable {unit}: {result.stderr.strip()}", file=sys.stderr)
+
+
+def cmd_doctor(args) -> int:
+    cfg = load_config()
+    print(f"config      {CONFIG_PATH}")
+    if os.path.exists(CONFIG_PATH):
+        mode = oct(os.stat(CONFIG_PATH).st_mode & 0o777)
+        print(f"permissions {mode}" + ("" if mode == "0o600" else "  <- should be 0o600"))
+    else:
+        print("permissions (missing) - run: omarchy-unifi setup")
+    print(f"host        {cfg['host'] or '(unset)'}")
+    print(f"site        {cfg['site']}")
+    print(f"api key     {'set' if cfg['apiKey'] else '(unset)'}")
+    print(f"state       {STATE_PATH}")
+
+    api = UniFi(cfg)
+    ok = True
+
+    print("\nlegacy API  /proxy/network/api  (health, devices, clients, actions)")
+    try:
+        health = api.legacy("stat/health")
+        subs = _subsystems(health)
+        print(f"  ok        {len(subs)} subsystems: {', '.join(sorted(subs)) or 'none'}")
+    except UniFiError as exc:
+        ok = False
+        print(f"  FAILED    {exc}")
+
+    print("\nintegration /proxy/network/integration/v1  (fallback / diagnostics)")
+    try:
+        info = api.integration("sites")
+        count = len(info.get("data") or []) if isinstance(info, dict) else 0
+        print(f"  ok        {count} site(s) visible")
+    except UniFiError as exc:
+        # Not fatal: every feature this plugin ships uses the legacy surface.
+        print(f"  unavailable {exc}")
+
+    if ok:
+        print("\nAll required endpoints are reachable.")
+        return 0
+    print("\nThe legacy API is required. Check the address, key, and that the "
+          "console is reachable from this machine.", file=sys.stderr)
+    return 1
+
+
+def cmd_poll(args) -> int:
+    cfg = load_config()
+    api = UniFi(cfg)
+    try:
+        write_state(collect(api))
+        return 0
+    except UniFiError as exc:
+        # Persist the failure so the panel can explain itself while offline.
+        write_state(error_state(api, str(exc)))
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_daemon(args) -> int:
+    cfg = load_config()
+    interval = max(3, int(_num(cfg.get("pollIntervalSec"), 10)))
+    api = UniFi(cfg)
+    while True:
+        try:
+            write_state(collect(api))
+        except UniFiError as exc:
+            write_state(error_state(api, str(exc)))
+        except Exception as exc:  # keep the daemon alive through surprises
+            write_state(error_state(api, f"unexpected error: {exc}"))
+        time.sleep(interval)
+
+
+def cmd_status(args) -> int:
+    state = read_state()
+    if not state:
+        print("No state yet. Run: omarchy-unifi poll", file=sys.stderr)
+        return 1
+    if args.json:
+        json.dump(state, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    wan = state.get("wan", {})
+    clients = state.get("clients", {})
+    devices = state.get("devices", {})
+    mark = "up" if wan.get("up") else "DOWN"
+    print(f"internet   {mark}  {wan.get('ip', '')}".rstrip())
+    print(f"throughput down {human_bps(wan.get('downBps', 0))}bps  "
+          f"up {human_bps(wan.get('upBps', 0))}bps")
+    print(f"clients    {clients.get('total', 0)} "
+          f"({clients.get('wireless', 0)} wireless, {clients.get('wired', 0)} wired)")
+    print(f"devices    {devices.get('online', 0)}/{devices.get('total', 0)} online")
+    for alert in state.get("alerts", []):
+        print(f"  ! {alert}")
+    if state.get("stale"):
+        age = human_uptime(time.time() - state.get("updatedAt", 0))
+        print(f"  ! data is stale ({age} old)")
+    return 0
+
+
+def _act(body: dict, manager: str = "devmgr") -> int:
+    api = UniFi(load_config())
+    try:
+        api.legacy(f"cmd/{manager}", body)
+    except UniFiError as exc:
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+    # Refresh immediately so the panel reflects the change without waiting
+    # for the next poll tick.
+    try:
+        write_state(collect(api))
+    except UniFiError:
+        pass
+    return 0
+
+
+def cmd_restart(args) -> int:
+    return _act({"cmd": "restart", "mac": args.mac.lower()})
+
+
+def cmd_block(args) -> int:
+    return _act({"cmd": "block-sta", "mac": args.mac.lower()}, "stamgr")
+
+
+def cmd_unblock(args) -> int:
+    return _act({"cmd": "unblock-sta", "mac": args.mac.lower()}, "stamgr")
+
+
+def cmd_kick(args) -> int:
+    return _act({"cmd": "kick-sta", "mac": args.mac.lower()}, "stamgr")
+
+
+def cmd_speedtest(args) -> int:
+    api = UniFi(load_config())
+    try:
+        api.legacy("cmd/devmgr", {"cmd": "speedtest"})
+    except UniFiError as exc:
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+    print("Speed test started.")
+    if not args.wait:
+        return 0
+    # The console reports progress through devmgr; results land in health.
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        time.sleep(5)
+        try:
+            rows = api.legacy("cmd/devmgr", {"cmd": "speedtest-status"})
+            status = rows[0] if rows else {}
+            if str(status.get("speedtest_status") or "").lower() in ("success", "done", ""):
+                break
+        except UniFiError:
+            break
+    try:
+        state = collect(api)
+        write_state(state)
+        result = state["wan"]["speedtest"]
+        if result["downMbps"] >= 0:
+            print(f"down {result['downMbps']:.1f} Mbps  "
+                  f"up {result['upMbps']:.1f} Mbps  "
+                  f"latency {result['latencyMs']:.0f} ms")
+    except UniFiError as exc:
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_open(args) -> int:
+    cfg = load_config()
+    if not cfg["host"]:
+        print("No host configured; run: omarchy-unifi setup", file=sys.stderr)
+        return 1
+    os.execvp("xdg-open", ["xdg-open", f"https://{cfg['host']}"])
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog=APP, description="Manage a UniFi OS console from the Omarchy bar.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("setup", help="configure console address and API key").set_defaults(func=cmd_setup)
+    sub.add_parser("doctor", help="check connectivity and permissions").set_defaults(func=cmd_doctor)
+    sub.add_parser("poll", help="fetch once and update the state file").set_defaults(func=cmd_poll)
+    sub.add_parser("daemon", help="poll continuously").set_defaults(func=cmd_daemon)
+    sub.add_parser("open", help="open the console web UI").set_defaults(func=cmd_open)
+
+    p_status = sub.add_parser("status", help="print the last polled state")
+    p_status.add_argument("--json", action="store_true", help="raw state JSON")
+    p_status.set_defaults(func=cmd_status)
+
+    for name, func, helptext in (
+        ("restart", cmd_restart, "restart a device by MAC"),
+        ("block", cmd_block, "block a client by MAC"),
+        ("unblock", cmd_unblock, "unblock a client by MAC"),
+        ("kick", cmd_kick, "disconnect a client by MAC"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("mac")
+        p.set_defaults(func=func)
+
+    p_speed = sub.add_parser("speedtest", help="run a WAN speed test")
+    p_speed.add_argument("--wait", action="store_true", help="wait for the result")
+    p_speed.set_defaults(func=cmd_speedtest)
+
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+    except UniFiError as exc:
+        print(f"{APP}: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
