@@ -8,7 +8,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.config/omarchy/plugins/keenan.unifi-network/bin/omarchy-unifi daemon
+ExecStart=%h/.config/omarchy/plugins/io.github.pkeenan87.unifi-network/bin/omarchy-unifi daemon
 Restart=always
 RestartSec=10
 # The console credential and the polled state are both private to the user.
@@ -22,7 +22,7 @@ ProtectSystem=strict
 # it read-only, so a compromise cannot read ssh keys or browser profiles.
 ProtectHome=tmpfs
 BindReadOnlyPaths=%h/.config/omarchy-unifi
-BindReadOnlyPaths=%h/.config/omarchy/plugins/keenan.unifi-network
+BindReadOnlyPaths=%h/.config/omarchy/plugins/io.github.pkeenan87.unifi-network
 # StateDirectory creates and owns this, so the unit no longer fails to start
 # when the directory does not exist yet.
 StateDirectory=omarchy-unifi

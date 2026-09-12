@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "keenan.unifi-network",
+  "id": "io.github.pkeenan87.unifi-network",
   "name": "UniFi Network",
   "version": "1.0.0",
   "author": "Patrick Keenan",

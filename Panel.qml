@@ -13,7 +13,7 @@ import qs.Ui
 // process, and means a hung console can never stall the bar.
 Panel {
   id: root
-  moduleName: "keenan.unifi-network"
+  moduleName: "io.github.pkeenan87.unifi-network"
   manageIpc: false
 
   property Item anchorItem: null

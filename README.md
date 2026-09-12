@@ -90,7 +90,7 @@ Widget settings live in `~/.config/omarchy/shell.json` and hot-reload on save:
 | `maxClients` | `25` | Clients listed in the panel |
 
 ```json
-{ "id": "keenan.unifi-network", "maxClients": 20, "showThroughput": true }
+{ "id": "io.github.pkeenan87.unifi-network", "maxClients": 20, "showThroughput": true }
 ```
 
 Console settings live in `~/.config/omarchy-unifi/config.json` (mode `0600`):

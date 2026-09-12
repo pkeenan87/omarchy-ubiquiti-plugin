@@ -12,7 +12,7 @@ import qs.Ui
 // because a count that is fine most of the time should not cost bar width.
 BarWidget {
   id: root
-  moduleName: "keenan.unifi-network"
+  moduleName: "io.github.pkeenan87.unifi-network"
 
   // The bar is a status light, not a readout: the figures change constantly,
   // cost width permanently, and are a click away in the panel (and in the
@@ -97,7 +97,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "keenan.unifi-network"
+    target: "io.github.pkeenan87.unifi-network"
 
     function refresh(): void { root.refresh() }
     function open(): void { root.open() }

@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-plugin_id="keenan.unifi-network"
+plugin_id="io.github.pkeenan87.unifi-network"
 plugin_dir="$HOME/.config/omarchy/plugins/$plugin_id"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-unifi"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-unifi"

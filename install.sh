@@ -4,7 +4,7 @@
 set -euo pipefail
 
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-plugin_id="keenan.unifi-network"
+plugin_id="io.github.pkeenan87.unifi-network"
 plugin_dir="$HOME/.config/omarchy/plugins/$plugin_id"
 
 mkdir -p "$plugin_dir"
