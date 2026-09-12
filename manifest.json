@@ -22,14 +22,14 @@
       "refreshIntervalSec": 10,
       "maxClients": 25,
       "showThroughput": true,
-      "showClients": true
+      "showClients": false
     },
     "schema": [
       {
         "key": "showClients",
         "type": "boolean",
         "label": "Show client count in the bar",
-        "defaultValue": true
+        "defaultValue": false
       },
       {
         "key": "showThroughput",

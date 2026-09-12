@@ -14,8 +14,11 @@ BarWidget {
   id: root
   moduleName: "keenan.unifi-network"
 
+  // The count is the widest thing the label can carry and the least urgent —
+  // it is one keystroke away in the panel and always in the tooltip — so the
+  // bar defaults to the icon plus throughput. Set showClients to re-add it.
   readonly property bool showThroughput: setting("showThroughput", true)
-  readonly property bool showClients: setting("showClients", true)
+  readonly property bool showClients: setting("showClients", false)
 
   readonly property var state: panelLoader.item ? panelLoader.item.state : ({})
   readonly property bool configured: panelLoader.item ? panelLoader.item.configured : false
@@ -35,12 +38,19 @@ BarWidget {
          + " ↑" + panelLoader.item.humanBps(wan.upBps)
   }
 
+  // nf-fa-signal: three plain bars. The neighbouring network widget already
+  // owns the wifi arcs and the ethernet plug, so this stays legible beside
+  // them instead of reading as a second wifi indicator.
+  readonly property string icon: ""
+
   readonly property string displayText: {
-    if (!configured) return " setup"
-    var parts = [""]
+    if (!configured) return icon + "  setup"
+    var parts = []
     if (showClients) parts.push(clientText)
     if (showThroughput && throughputText !== "") parts.push(throughputText)
-    return parts.join("  ")
+    // The glyph's advance leaves almost no gap of its own, so the icon gets a
+    // wider separator than the figures get between themselves.
+    return parts.length ? icon + "  " + parts.join(" ") : icon
   }
 
   // Shape contract for Bar.findPanelWidget popout routing.
@@ -97,7 +107,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "" : root.displayText
+    text: root.vertical ? root.icon : root.displayText
     labelVisible: true
     hasVisualContent: text !== ""
     horizontalMargin: 8.75

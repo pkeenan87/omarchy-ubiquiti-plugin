@@ -82,9 +82,36 @@ def save_config(cfg: dict) -> None:
 
 
 class UniFiError(Exception):
-    def __init__(self, message: str, status: int = 0):
+    def __init__(self, message: str, status: int = 0, api_code: str = ""):
         super().__init__(message)
         self.status = status
+        # The raw `meta.msg` from the console, e.g. "api.err.SpeedTestNotSupported".
+        self.api_code = api_code
+
+
+# Console error codes worth translating; anything else is shown verbatim.
+API_ERRORS = {
+    "api.err.SpeedTestNotSupported":
+        "this gateway does not support controller-run speed tests",
+    "api.err.NoSiteContext": "site not found - check the site name",
+    "api.err.Invalid": "the console rejected the request",
+}
+
+
+def _api_error(exc):
+    """Pull `meta.msg` out of a UniFi error body.
+
+    Returns (raw_code, readable_message) so callers can branch on the code
+    while the user sees plain words.
+    """
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+        code = str(body.get("meta", {}).get("msg") or "")
+    except Exception:
+        return "", ""
+    if not code:
+        return "", ""
+    return code, API_ERRORS.get(code, code)
 
 
 class UniFi:
@@ -132,10 +159,13 @@ class UniFi:
             with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as resp:
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
-            hint = ""
+            code, detail = _api_error(exc)
             if exc.code in (401, 403):
-                hint = " (API key rejected - check it is a Network API key and not expired)"
-            raise UniFiError(f"HTTP {exc.code} for {path}{hint}", exc.code)
+                # What the console says here is generic ("api.err.Invalid");
+                # what the status means is not, so the status wins.
+                detail = "API key rejected - check it is a Network API key and not expired"
+            suffix = f": {detail}" if detail else ""
+            raise UniFiError(f"HTTP {exc.code} for {path}{suffix}", exc.code, code)
         except urllib.error.URLError as exc:
             raise UniFiError(f"cannot reach {self.host}: {exc.reason}")
         except TimeoutError:
@@ -327,6 +357,7 @@ def collect(api: UniFi) -> dict:
     wan = build_wan(subs)
     device_info = build_devices(devices)
     return {
+        "speedtestSupported": read_state().get("speedtestSupported", True),
         "schema": 1,
         "updatedAt": time.time(),
         "ok": True,
@@ -370,6 +401,7 @@ def error_state(api: UniFi, message: str) -> dict:
         "ok": False,
         "error": message,
         "configured": bool(getattr(api, "host", "") and getattr(api, "key", "")),
+        "speedtestSupported": previous.get("speedtestSupported", True),
         "host": getattr(api, "host", ""),
         "site": getattr(api, "site", "default"),
         # Keep the last good reading so the panel can show stale data with a
@@ -606,6 +638,16 @@ def cmd_speedtest(args) -> int:
     try:
         api.legacy("cmd/devmgr", {"cmd": "speedtest"})
     except UniFiError as exc:
+        if exc.api_code == "api.err.SpeedTestNotSupported":
+            # Remember it: the panel hides the button rather than offering an
+            # action that can only ever fail on this hardware.
+            state = read_state()
+            state["speedtestSupported"] = False
+            write_state(state)
+            print(f"{APP}: this gateway does not support controller-run speed "
+                  f"tests. Run one from the UniFi app, or from a client with "
+                  f"`speedtest-cli`.", file=sys.stderr)
+            return 1
         print(f"{APP}: {exc}", file=sys.stderr)
         return 1
     print("Speed test started.")

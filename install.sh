@@ -40,7 +40,10 @@ omarchy-shell shell rescanPlugins
 omarchy plugin enable "$plugin_id" --section right
 
 if [[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-unifi/config.json" ]]; then
-  systemctl --user enable --now omarchy-unifi.service
+  # Restart rather than just enable: a running daemon holds the old script in
+  # memory, so copying a new one over it changes nothing until it respawns.
+  systemctl --user enable omarchy-unifi.service
+  systemctl --user restart omarchy-unifi.service
   printf '\n%s\n' "UniFi Network is in the bar and polling."
 else
   printf '\n%s\n' "UniFi Network is in the bar. Click it and choose Run setup,"

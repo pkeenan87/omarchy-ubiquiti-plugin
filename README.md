@@ -6,11 +6,15 @@ the UniFi app, and handles the three things you usually open the app for:
 restarting a device, blocking a client, and running a speed test.
 
 ```
- 24  ↓12M ↑1.1M
+  ↓5.6M ↑353k
 ```
 
-Client count, live WAN throughput, and — when something is wrong — the label
-turns your theme's urgent colour. A healthy network stays visually quiet.
+Live WAN throughput, and — when something is wrong — the label turns your
+theme's urgent colour. A healthy network stays visually quiet.
+
+The client count is off by default to keep the bar narrow; it is always in
+the tooltip and the panel. Set `showClients` to put it back, or turn
+`showThroughput` off for an icon-only widget.
 
 ## Install
 
@@ -30,8 +34,7 @@ background poller. If it cannot connect, nothing is written.
 
 ## What you get
 
-**In the bar.** Client count and WAN throughput, refreshed by a background
-service. The label turns urgent when the internet drops, a device goes
+**In the bar.** WAN throughput, refreshed by a background service. The label turns urgent when the internet drops, a device goes
 offline, or firmware updates are pending. A small dot marks a stale reading —
 the console became unreachable — so a frozen number never reads as a live one.
 
@@ -49,13 +52,18 @@ reconnected or blocked, and blocked clients unblocked. Restarting and blocking
 ask for confirmation first; reconnecting does not, because a client normally
 comes straight back.
 
+**Speed tests** need a gateway that can run one on the controller's behalf.
+The USG family cannot — the console answers `api.err.SpeedTestNotSupported` —
+so the first refusal is remembered and the button stops being offered. Run
+one from the UniFi app instead, or with `speedtest-cli` on a client.
+
 ## Configuration
 
 Widget settings live in `~/.config/omarchy/shell.json` and hot-reload on save:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `showClients` | `true` | Show the client count in the bar |
+| `showClients` | `false` | Show the client count in the bar |
 | `showThroughput` | `true` | Show WAN throughput in the bar |
 | `refreshIntervalSec` | `10` | Poll rate while the panel is open |
 | `maxClients` | `12` | Clients listed in the panel |
@@ -78,7 +86,7 @@ omarchy-unifi status          # what the bar is showing, as text
 omarchy-unifi status --json   # the full state file
 omarchy-unifi doctor          # check the address, key, and endpoints
 omarchy-unifi poll            # refresh once
-omarchy-unifi speedtest --wait
+omarchy-unifi speedtest --wait   # if your gateway supports it
 omarchy-unifi restart <mac>
 omarchy-unifi block <mac> | unblock <mac> | kick <mac>
 ```

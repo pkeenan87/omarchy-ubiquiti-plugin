@@ -51,6 +51,9 @@ Panel {
                                      && state.configured !== false
   readonly property bool stale: configured && state.stale === true
   readonly property bool wanUp: wan && wan.up === true
+  // Learned from the console the first time a speed test is refused: some
+  // gateways (the USG family) cannot run one on the controller's behalf.
+  readonly property bool speedtestSupported: !state || state.speedtestSupported !== false
   readonly property bool healthy: configured && !stale && wanUp && alerts.length === 0
 
   readonly property string barTooltip: {
@@ -324,7 +327,7 @@ Panel {
             }
 
             ActionButton {
-              visible: root.configured
+              visible: root.configured && root.speedtestSupported
               label: root.speedtestRunning ? "Testing…" : "Speed test"
               outlined: true
               enabled: !actionProcess.running
@@ -419,8 +422,19 @@ Panel {
                 if (root.wan.uptimeSec > 0) parts.push("up " + root.humanUptime(root.wan.uptimeSec))
                 return parts.join("  ·  ")
               }
-              detail: "↓ " + root.humanBps(root.wan.downBps) + "bps"
-                    + "      ↑ " + root.humanBps(root.wan.upBps) + "bps"
+            }
+
+            // Sits directly under the hero's meta line rather than in the
+            // hero's trailing pill: it is the fastest-changing number here and
+            // reads better as the last line of that block than as a badge.
+            Text {
+              visible: root.configured && root.wanUp
+              width: parent.width
+              text: "↓ " + root.humanBps(root.wan.downBps) + "bps"
+                  + "      ↑ " + root.humanBps(root.wan.upBps) + "bps"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
             }
 
             // ---- alerts ----

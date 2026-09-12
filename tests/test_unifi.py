@@ -185,6 +185,34 @@ class TestAlerts(unittest.TestCase):
         self.assertIn("2 devices offline", alerts)
 
 
+class TestApiErrors(unittest.TestCase):
+    class FakeHttpError:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return self._payload.encode()
+
+    def test_known_code_is_translated(self):
+        err = self.FakeHttpError(
+            '{"meta":{"rc":"error","msg":"api.err.SpeedTestNotSupported"},"data":[]}')
+        code, message = uni._api_error(err)
+        self.assertEqual(code, "api.err.SpeedTestNotSupported")
+        self.assertIn("does not support", message)
+
+    def test_unknown_code_is_passed_through_verbatim(self):
+        err = self.FakeHttpError('{"meta":{"rc":"error","msg":"api.err.Weird"}}')
+        code, message = uni._api_error(err)
+        self.assertEqual(code, "api.err.Weird")
+        self.assertEqual(message, "api.err.Weird")
+
+    def test_non_json_body_is_survivable(self):
+        self.assertEqual(uni._api_error(self.FakeHttpError("<html>502</html>")), ("", ""))
+
+    def test_body_without_a_message(self):
+        self.assertEqual(uni._api_error(self.FakeHttpError('{"meta":{"rc":"ok"}}')), ("", ""))
+
+
 class TestFormatting(unittest.TestCase):
     def test_bits_per_second_scaling(self):
         self.assertEqual(uni.human_bps(0), "0")
