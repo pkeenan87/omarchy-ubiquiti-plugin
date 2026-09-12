@@ -432,6 +432,9 @@ Panel {
               width: parent.width
               text: "↓ " + root.humanBps(root.wan.downBps) + "bps"
                   + "      ↑ " + root.humanBps(root.wan.upBps) + "bps"
+              // PanelHero insets its labels by the icon gutter even when it
+              // has no icon; match it so this reads as the block's last line.
+              leftPadding: Style.space(14)
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

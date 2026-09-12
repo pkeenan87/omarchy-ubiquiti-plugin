@@ -5,16 +5,13 @@ UDR, or UniFi OS Server. It shows what your network is doing without opening
 the UniFi app, and handles the three things you usually open the app for:
 restarting a device, blocking a client, and running a speed test.
 
-```
-  ↓5.6M ↑353k
-```
+In the bar it is a single icon that turns your theme's urgent colour when
+something is wrong. A healthy network stays visually quiet and costs one
+icon slot.
 
-Live WAN throughput, and — when something is wrong — the label turns your
-theme's urgent colour. A healthy network stays visually quiet.
-
-The client count is off by default to keep the bar narrow; it is always in
-the tooltip and the panel. Set `showClients` to put it back, or turn
-`showThroughput` off for an icon-only widget.
+The figures — throughput and client count — live in the panel, and in the
+tooltip if you just hover. Both can be put in the bar with `showThroughput`
+and `showClients` if you would rather read them there.
 
 ## Install
 
@@ -34,7 +31,7 @@ background poller. If it cannot connect, nothing is written.
 
 ## What you get
 
-**In the bar.** WAN throughput, refreshed by a background service. The label turns urgent when the internet drops, a device goes
+**In the bar.** One icon, refreshed by a background service. The label turns urgent when the internet drops, a device goes
 offline, or firmware updates are pending. A small dot marks a stale reading —
 the console became unreachable — so a frozen number never reads as a live one.
 
@@ -64,12 +61,12 @@ Widget settings live in `~/.config/omarchy/shell.json` and hot-reload on save:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `showClients` | `false` | Show the client count in the bar |
-| `showThroughput` | `true` | Show WAN throughput in the bar |
+| `showThroughput` | `false` | Show WAN throughput in the bar |
 | `refreshIntervalSec` | `10` | Poll rate while the panel is open |
-| `maxClients` | `12` | Clients listed in the panel |
+| `maxClients` | `25` | Clients listed in the panel |
 
 ```json
-{ "id": "keenan.unifi-network", "maxClients": 20, "showThroughput": false }
+{ "id": "keenan.unifi-network", "maxClients": 20, "showThroughput": true }
 ```
 
 Console settings live in `~/.config/omarchy-unifi/config.json` (mode `0600`):

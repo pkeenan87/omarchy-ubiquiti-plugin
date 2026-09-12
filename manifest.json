@@ -21,7 +21,7 @@
     "defaults": {
       "refreshIntervalSec": 10,
       "maxClients": 25,
-      "showThroughput": true,
+      "showThroughput": false,
       "showClients": false
     },
     "schema": [
@@ -35,7 +35,7 @@
         "key": "showThroughput",
         "type": "boolean",
         "label": "Show WAN throughput in the bar",
-        "defaultValue": true
+        "defaultValue": false
       },
       {
         "key": "refreshIntervalSec",

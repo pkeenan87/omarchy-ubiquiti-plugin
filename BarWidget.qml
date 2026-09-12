@@ -14,10 +14,10 @@ BarWidget {
   id: root
   moduleName: "keenan.unifi-network"
 
-  // The count is the widest thing the label can carry and the least urgent —
-  // it is one keystroke away in the panel and always in the tooltip — so the
-  // bar defaults to the icon plus throughput. Set showClients to re-add it.
-  readonly property bool showThroughput: setting("showThroughput", true)
+  // The bar is a status light, not a readout: the figures change constantly,
+  // cost width permanently, and are a click away in the panel (and in the
+  // tooltip without one). Both are opt-in.
+  readonly property bool showThroughput: setting("showThroughput", false)
   readonly property bool showClients: setting("showClients", false)
 
   readonly property var state: panelLoader.item ? panelLoader.item.state : ({})
@@ -52,6 +52,8 @@ BarWidget {
     // wider separator than the figures get between themselves.
     return parts.length ? icon + "  " + parts.join(" ") : icon
   }
+
+  readonly property bool iconOnly: configured && displayText === icon
 
   // Shape contract for Bar.findPanelWidget popout routing.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -112,6 +114,9 @@ BarWidget {
     hasVisualContent: text !== ""
     horizontalMargin: 8.75
     verticalPadding: 8.75
+    // Icon-only is the default, and then this should sit in the same slot as
+    // the tray, audio and power icons rather than in a text-sized box.
+    fixedWidth: root.vertical || !root.iconOnly ? -1 : Style.bar.statusSlot
 
     // Trouble is worth a colour change; everything else stays in the theme's
     // normal foreground so a healthy network is visually quiet. `active`
