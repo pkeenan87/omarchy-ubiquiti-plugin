@@ -30,6 +30,10 @@ ln -sf "$plugin_dir/bin/omarchy-unifi" "$HOME/.local/bin/omarchy-unifi"
 
 # Install the background poller, but leave it stopped until there is a
 # console to poll. `omarchy-unifi setup` enables it once that succeeds.
+# ReadWritePaths requires this to exist before the unit starts.
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-unifi"
+chmod 700 "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-unifi"
+
 unit_dir="$HOME/.config/systemd/user"
 mkdir -p "$unit_dir"
 install -m 644 "$source_dir/systemd/omarchy-unifi.service" "$unit_dir/omarchy-unifi.service"

@@ -377,6 +377,38 @@ class TestConfigAndDaemonSafety(unittest.TestCase):
         self.assertEqual(state["alerts"], ["configuration unreadable"])
 
 
+class TestMacValidation(unittest.TestCase):
+    def test_common_formats_normalise(self):
+        for value in ("AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff", "aabbccddeeff",
+                      "  aa:bb:cc:dd:ee:ff  "):
+            self.assertEqual(uni.normalise_mac(value), "aa:bb:cc:dd:ee:ff")
+
+    def test_a_name_is_rejected_rather_than_posted(self):
+        # UniFi answers 200 for a MAC that matches nothing, so an unvalidated
+        # name looked like a successful block that silently did nothing.
+        with self.assertRaises(uni.UniFiError) as ctx:
+            uni.normalise_mac("laptop")
+        self.assertIn("not a MAC address", str(ctx.exception))
+        self.assertIn("clients", str(ctx.exception))
+
+    def test_malformed_values_are_rejected(self):
+        for value in ("", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:ff:00", "zz:bb:cc:dd:ee:ff",
+                      None, "192.168.1.5"):
+            with self.assertRaises(uni.UniFiError):
+                uni.normalise_mac(value)
+
+
+class TestHostValidation(unittest.TestCase):
+    def test_accepts_real_addresses(self):
+        for value in ("192.168.1.9", "192.168.1.9:8443", "unifi.lan",
+                      "unifi.example.com", "[fe80::1]", "[fe80::1]:8443"):
+            self.assertTrue(uni.HOST_RE.match(value), value)
+
+    def test_rejects_urls_and_paths(self):
+        for value in ("user@evil.example", "192.168.1.9/network", "a b", ""):
+            self.assertFalse(uni.HOST_RE.match(value), value)
+
+
 class TestClient(unittest.TestCase):
     def test_scheme_is_stripped_from_host(self):
         self.assertEqual(uni.UniFi({"host": "https://192.168.1.1/"}).host, "192.168.1.1")

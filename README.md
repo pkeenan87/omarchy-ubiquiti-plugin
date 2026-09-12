@@ -31,8 +31,9 @@ background poller. If it cannot connect, nothing is written.
 
 ## What you get
 
-**In the bar.** One icon, refreshed by a background service. The label turns urgent when the internet drops, a device goes
-offline, or firmware updates are pending. A small dot marks a stale reading —
+**In the bar.** One icon, refreshed by a background service. The label turns urgent when the internet drops or a device goes
+offline. Firmware updates are shown in the panel but never colour the bar —
+a deferred update is a normal state to sit in, not an outage. A small dot marks a stale reading —
 the console became unreachable — so a frozen number never reads as a live one.
 
 - **Left click** — open the panel
@@ -72,21 +73,52 @@ Widget settings live in `~/.config/omarchy/shell.json` and hot-reload on save:
 Console settings live in `~/.config/omarchy-unifi/config.json` (mode `0600`):
 `host`, `apiKey`, `site`, `verifySsl`, `pollIntervalSec`, `timeoutSec`.
 
-Set `verifySsl` to `true` only if you have given the console a certificate
-your machine trusts. It is off by default because consoles ship a self-signed
-certificate for their LAN address, which no CA will vouch for.
+### Certificate trust
+
+The API key is a full-admin credential for the console, so it must only ever
+be sent to the console. Consoles ship a self-signed certificate that no CA
+will vouch for, so `setup` reads the certificate the console is presenting —
+before the key is ever transmitted — and pins its SHA-256. Every later request
+checks it during the handshake and aborts the connection on a mismatch, so
+nothing is sent to an impostor.
+
+If the console's certificate legitimately changes (firmware update, factory
+reset), re-pin it:
+
+```bash
+omarchy-unifi trust-cert
+```
+
+That shows you both fingerprints and asks before replacing the pin. `doctor`
+reports what is currently trusted.
+
+Pinning compares the fingerprint rather than installing the certificate as a
+trust anchor: a console presents an end-entity certificate (`CA:FALSE`), and
+OpenSSL rejects such a certificate as an anchor with "invalid CA certificate"
+even with `VERIFY_X509_PARTIAL_CHAIN`.
+
+Set `verifySsl` to `true` if you have given the console a certificate your
+machine already trusts; that uses normal CA verification and ignores the pin.
 
 ## Command line
 
 ```bash
 omarchy-unifi status          # what the bar is showing, as text
 omarchy-unifi status --json   # the full state file
-omarchy-unifi doctor          # check the address, key, and endpoints
+omarchy-unifi clients         # every client with its MAC
+omarchy-unifi devices         # every adopted device with its MAC
+omarchy-unifi doctor          # check the address, key, TLS, and endpoints
 omarchy-unifi poll            # refresh once
+omarchy-unifi trust-cert      # re-pin after the console's certificate changes
 omarchy-unifi speedtest --wait   # if your gateway supports it
 omarchy-unifi restart <mac>
 omarchy-unifi block <mac> | unblock <mac> | kick <mac>
 ```
+
+`clients` and `devices` are where the MACs come from. Any format works —
+`aa:bb:cc:dd:ee:ff`, `AA-BB-CC-DD-EE-FF`, `aabbccddeeff` — but a name is
+rejected rather than sent, because UniFi answers "200 OK" for a MAC that
+matches nothing and that looks identical to success.
 
 `doctor` is the place to start when the panel looks wrong. It reports the
 config path and its permissions, and probes both API surfaces separately so
@@ -120,6 +152,16 @@ your home directory and are never sent anywhere.
 
 An API key grants full access to the console until you revoke it, which you
 can do at any time in the same Integrations screen that issued it.
+
+There is deliberately no `UNIFI_API_KEY` environment variable: an exported
+credential is readable in `/proc/*/environ` for every process you run and is
+inherited by everything this CLI spawns. `UNIFI_API_KEY_FILE` points at a
+file instead.
+
+Client and device names come from the devices themselves (DHCP option 12), so
+they are chosen by whoever owns them. They are rendered as plain text and
+stripped of control characters, so a hostile name cannot impersonate another
+client or break the layout.
 
 ## Requirements
 

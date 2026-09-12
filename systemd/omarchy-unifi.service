@@ -1,6 +1,9 @@
 [Unit]
 Description=Poll a UniFi OS console for the Omarchy bar
 Documentation=https://github.com/keenan/omarchy-plugin-unifi
+# Wants= as well: in the user manager network-online.target is passive, so
+# After= alone does not pull it in and the first poll after login fails.
+Wants=network-online.target
 After=network-online.target
 
 [Service]
@@ -14,13 +17,33 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+# The daemon needs exactly three paths: its config, its own code, and its
+# state file. TemporaryFileSystem hides the rest of $HOME rather than exposing
+# it read-only, so a compromise cannot read ssh keys or browser profiles.
+ProtectHome=tmpfs
+BindReadOnlyPaths=%h/.config/omarchy-unifi
+BindReadOnlyPaths=%h/.config/omarchy/plugins/keenan.unifi-network
+# StateDirectory creates and owns this, so the unit no longer fails to start
+# when the directory does not exist yet.
+StateDirectory=omarchy-unifi
 ReadWritePaths=%h/.local/state/omarchy-unifi
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictNamespaces=true
 RestrictRealtime=true
+RestrictSUIDSGID=true
+# One outbound HTTPS connection and a unix socket for DNS and the journal.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+LockPersonality=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+PrivateDevices=true
 MemoryMax=128M
 
 [Install]

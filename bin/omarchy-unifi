@@ -16,6 +16,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -301,6 +302,23 @@ class UniFi:
 # alias paint over the row beneath it. Names here are chosen by whoever owns
 # the device (DHCP option 12), so they are untrusted input.
 _CONTROL = {c: None for c in list(range(0x00, 0x20)) + [0x7F] + list(range(0x80, 0xA0))}
+
+
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:]+\](:\d{1,5})?$")
+
+
+def normalise_mac(value: str) -> str:
+    """UniFi stores MACs lowercase and colon-separated. Anything else silently
+    matches nothing, so reject it here rather than posting it and getting an
+    unhelpful success."""
+    mac = str(value or "").strip().lower().replace("-", ":")
+    if len(mac) == 12 and ":" not in mac:
+        mac = ":".join(mac[i:i + 2] for i in range(0, 12, 2))
+    if not MAC_RE.match(mac):
+        raise UniFiError(f"not a MAC address: {value!r} "
+                         f"(expected aa:bb:cc:dd:ee:ff; try: {APP} clients)")
+    return mac
 
 
 def _clean(value, limit: int = 64) -> str:
@@ -600,6 +618,15 @@ def cmd_setup(args) -> int:
 
     host = input(f"Console address [{cfg['host'] or '192.168.1.1'}]: ").strip()
     cfg["host"] = host or cfg["host"] or "192.168.1.1"
+    for prefix in ("https://", "http://"):
+        if cfg["host"].startswith(prefix):
+            cfg["host"] = cfg["host"][len(prefix):]
+    cfg["host"] = cfg["host"].rstrip("/")
+    if not HOST_RE.match(cfg["host"]):
+        print(f"\n{cfg['host']!r} is not a host or host:port address.",
+              file=sys.stderr)
+        _pause()
+        return 1
 
     prompt = "API key" + (" [keep existing]" if cfg["apiKey"] else "") + ": "
     # getpass keeps the key out of the terminal scrollback and shell history.
@@ -819,6 +846,42 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_clients(args) -> int:
+    """List clients with their MACs - the actions take a MAC, and nothing
+    else in the plugin showed one."""
+    state = read_state()
+    if not state:
+        print(f"No state yet. Run: {APP} poll", file=sys.stderr)
+        return 1
+    rows = state.get("clientList", [])
+    if not rows:
+        print("No clients listed.")
+        return 0
+    width = max(len(r["name"]) for r in rows)
+    for row in rows:
+        where = "wired" if row["wired"] else (row.get("essid") or "wireless")
+        print(f"{row['mac']}  {row['name']:<{width}}  {row['ip']:<15}  {where}")
+    return 0
+
+
+def cmd_devices(args) -> int:
+    state = read_state()
+    if not state:
+        print(f"No state yet. Run: {APP} poll", file=sys.stderr)
+        return 1
+    rows = state.get("devices", {}).get("list", [])
+    if not rows:
+        print("No devices listed.")
+        return 0
+    width = max(len(r["name"]) for r in rows)
+    for row in rows:
+        mark = "up  " if row["online"] else "DOWN"
+        extra = "  (update available)" if row["updatable"] else ""
+        print(f"{row['mac']}  {row['name']:<{width}}  {row['ip']:<15}  "
+              f"{mark}  {row['kind']}{extra}")
+    return 0
+
+
 def _act(body: dict, manager: str = "devmgr") -> int:
     api = UniFi(load_config())
     try:
@@ -836,19 +899,19 @@ def _act(body: dict, manager: str = "devmgr") -> int:
 
 
 def cmd_restart(args) -> int:
-    return _act({"cmd": "restart", "mac": args.mac.lower()})
+    return _act({"cmd": "restart", "mac": normalise_mac(args.mac)})
 
 
 def cmd_block(args) -> int:
-    return _act({"cmd": "block-sta", "mac": args.mac.lower()}, "stamgr")
+    return _act({"cmd": "block-sta", "mac": normalise_mac(args.mac)}, "stamgr")
 
 
 def cmd_unblock(args) -> int:
-    return _act({"cmd": "unblock-sta", "mac": args.mac.lower()}, "stamgr")
+    return _act({"cmd": "unblock-sta", "mac": normalise_mac(args.mac)}, "stamgr")
 
 
 def cmd_kick(args) -> int:
-    return _act({"cmd": "kick-sta", "mac": args.mac.lower()}, "stamgr")
+    return _act({"cmd": "kick-sta", "mac": normalise_mac(args.mac)}, "stamgr")
 
 
 def cmd_speedtest(args) -> int:
@@ -917,6 +980,9 @@ def main(argv=None) -> int:
     sub.add_parser("poll", help="fetch once and update the state file").set_defaults(func=cmd_poll)
     sub.add_parser("daemon", help="poll continuously").set_defaults(func=cmd_daemon)
     sub.add_parser("open", help="open the console web UI").set_defaults(func=cmd_open)
+
+    sub.add_parser("clients", help="list connected clients and their MACs").set_defaults(func=cmd_clients)
+    sub.add_parser("devices", help="list adopted devices and their MACs").set_defaults(func=cmd_devices)
 
     p_status = sub.add_parser("status", help="print the last polled state")
     p_status.add_argument("--json", action="store_true", help="raw state JSON")
