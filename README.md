@@ -16,8 +16,8 @@ and `showClients` if you would rather read them there.
 ## Install
 
 ```bash
-git clone https://github.com/keenan/omarchy-plugin-unifi
-cd omarchy-plugin-unifi
+git clone https://github.com/pkeenan87/omarchy-ubiquiti-plugin
+cd omarchy-ubiquiti-plugin
 ./install.sh
 omarchy-unifi setup
 ```

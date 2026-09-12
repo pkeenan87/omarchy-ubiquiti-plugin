@@ -1,6 +1,6 @@
 [Unit]
 Description=Poll a UniFi OS console for the Omarchy bar
-Documentation=https://github.com/keenan/omarchy-plugin-unifi
+Documentation=https://github.com/pkeenan87/omarchy-ubiquiti-plugin
 # Wants= as well: in the user manager network-online.target is passive, so
 # After= alone does not pull it in and the first poll after login fails.
 Wants=network-online.target
