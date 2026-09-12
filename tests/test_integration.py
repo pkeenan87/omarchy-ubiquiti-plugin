@@ -50,8 +50,6 @@ RESPONSES = {
 }
 
 received = []
-# Set to make the stub answer speed tests the way a USG-class gateway does.
-refuse_speedtest = []
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -83,11 +81,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if endpoint in RESPONSES:
             self._send(200, {"meta": {"rc": "ok"}, "data": RESPONSES[endpoint]})
         elif endpoint.startswith("cmd/"):
-            if refuse_speedtest and (body or {}).get("cmd") == "speedtest":
-                self._send(400, {"meta": {"rc": "error",
-                                          "msg": "api.err.SpeedTestNotSupported"},
-                                 "data": []})
-                return
             self._send(200, {"meta": {"rc": "ok"}, "data": []})
         else:
             self._send(404, {"meta": {"rc": "error", "msg": "api.err.UnknownEndpoint"}})
@@ -300,55 +293,6 @@ class TestAgainstStubConsole(unittest.TestCase):
                 uni.load_config = original
         body = next(b for ep, b in received if ep == "cmd/stamgr")
         self.assertEqual(body["mac"], "aa:bb:cc:dd:ee:ff")
-
-    def test_unsupported_speedtest_is_explained_and_remembered(self):
-        # A USG-class gateway refuses controller-run speed tests. The panel
-        # should stop offering the button rather than fail on every click.
-        refuse_speedtest.append(True)
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                uni.STATE_DIR, uni.STATE_PATH = tmp, os.path.join(tmp, "state.json")
-                original = uni.load_config
-                uni.load_config = lambda: dict(self.cfg)
-                try:
-                    uni.cmd_poll(None)
-                    self.assertTrue(json.load(open(uni.STATE_PATH))["speedtestSupported"])
-                    rc = uni.cmd_speedtest(type("A", (), {"wait": False}))
-                finally:
-                    uni.load_config = original
-                state = json.load(open(uni.STATE_PATH))
-            self.assertEqual(rc, 1)
-            self.assertFalse(state["speedtestSupported"])
-        finally:
-            refuse_speedtest.clear()
-
-    def test_unsupported_verdict_survives_the_next_poll(self):
-        refuse_speedtest.append(True)
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                uni.STATE_DIR, uni.STATE_PATH = tmp, os.path.join(tmp, "state.json")
-                original = uni.load_config
-                uni.load_config = lambda: dict(self.cfg)
-                try:
-                    uni.cmd_speedtest(type("A", (), {"wait": False}))
-                    # A later poll must not resurrect the button.
-                    uni.cmd_poll(None)
-                finally:
-                    uni.load_config = original
-                state = json.load(open(uni.STATE_PATH))
-            self.assertFalse(state["speedtestSupported"])
-        finally:
-            refuse_speedtest.clear()
-
-    def test_api_error_message_reaches_the_caller(self):
-        refuse_speedtest.append(True)
-        try:
-            with self.assertRaises(uni.UniFiError) as ctx:
-                self.api.legacy("cmd/devmgr", {"cmd": "speedtest"})
-            self.assertEqual(ctx.exception.api_code, "api.err.SpeedTestNotSupported")
-            self.assertIn("does not support", str(ctx.exception))
-        finally:
-            refuse_speedtest.clear()
 
     def test_poll_writes_state_file(self):
         with tempfile.TemporaryDirectory() as tmp:

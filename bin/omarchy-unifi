@@ -173,14 +173,12 @@ class UniFiError(Exception):
     def __init__(self, message: str, status: int = 0, api_code: str = ""):
         super().__init__(message)
         self.status = status
-        # The raw `meta.msg` from the console, e.g. "api.err.SpeedTestNotSupported".
+        # The raw `meta.msg` from the console, e.g. "api.err.NoSiteContext".
         self.api_code = api_code
 
 
 # Console error codes worth translating; anything else is shown verbatim.
 API_ERRORS = {
-    "api.err.SpeedTestNotSupported":
-        "this gateway does not support controller-run speed tests",
     "api.err.NoSiteContext": "site not found - check the site name",
     "api.err.Invalid": "the console rejected the request",
 }
@@ -361,13 +359,6 @@ def build_wan(subs: dict) -> dict:
         "latencyMs": _num(www.get("latency"), -1),
         "uptimeSec": _num(wan.get("uptime") or www.get("uptime")),
         "isp": wan.get("isp_name") or wan.get("isp_organization") or "",
-        "speedtest": {
-            "downMbps": _num(www.get("xput_down"), -1),
-            "upMbps": _num(www.get("xput_up"), -1),
-            "latencyMs": _num(www.get("speedtest_ping"), -1),
-            "ranAt": _num(www.get("speedtest_lastrun"), 0),
-            "status": str(www.get("speedtest_status") or ""),
-        },
     }
 
 
@@ -506,7 +497,6 @@ def collect(api: UniFi) -> dict:
     wan = build_wan(subs)
     device_info = build_devices(devices)
     return {
-        "speedtestSupported": read_state().get("speedtestSupported", True),
         "schema": 1,
         "updatedAt": time.time(),
         "ok": True,
@@ -555,7 +545,6 @@ def error_state(api: UniFi, message: str) -> dict:
         "ok": False,
         "error": message,
         "configured": bool(getattr(api, "host", "") and getattr(api, "key", "")),
-        "speedtestSupported": previous.get("speedtestSupported", True),
         "host": getattr(api, "host", ""),
         "site": getattr(api, "site", "default"),
         # Keep the last good reading so the panel can show stale data with a
@@ -613,8 +602,6 @@ def _pause() -> None:
 def cmd_setup(args) -> int:
     cfg = load_config()
     print("UniFi console setup\n")
-    print("Create a key in the UniFi Network app:")
-    print("  Settings -> Control Plane -> Integrations -> Create API Key\n")
 
     host = input(f"Console address [{cfg['host'] or '192.168.1.1'}]: ").strip()
     cfg["host"] = host or cfg["host"] or "192.168.1.1"
@@ -628,6 +615,15 @@ def cmd_setup(args) -> int:
         _pause()
         return 1
 
+    site = input(f"Site name [{cfg['site']}]: ").strip()
+    cfg["site"] = site or cfg["site"]
+
+    # Naming menus is guesswork across versions; the URL is not. Print the
+    # exact page for the console the user just named.
+    print(f"\nCreate an API key here:")
+    print(f"  https://{cfg['host']}/network/{cfg['site']}/integrations")
+    print("  Integrations -> Create API Key. It is shown once, so copy it now.\n")
+
     prompt = "API key" + (" [keep existing]" if cfg["apiKey"] else "") + ": "
     # getpass keeps the key out of the terminal scrollback and shell history.
     key = getpass.getpass(prompt).strip()
@@ -635,10 +631,8 @@ def cmd_setup(args) -> int:
         cfg["apiKey"] = key
     if not cfg["apiKey"]:
         print("\nAn API key is required.", file=sys.stderr)
+        _pause()
         return 1
-
-    site = input(f"Site name [{cfg['site']}]: ").strip()
-    cfg["site"] = site or cfg["site"]
 
     if not cfg.get("verifySsl"):
         # Capture the certificate BEFORE the key is ever sent, so the very
@@ -914,53 +908,6 @@ def cmd_kick(args) -> int:
     return _act({"cmd": "kick-sta", "mac": normalise_mac(args.mac)}, "stamgr")
 
 
-def cmd_speedtest(args) -> int:
-    api = UniFi(load_config())
-    try:
-        api.legacy("cmd/devmgr", {"cmd": "speedtest"})
-    except UniFiError as exc:
-        if exc.api_code == "api.err.SpeedTestNotSupported":
-            # Remember it: the panel hides the button rather than offering an
-            # action that can only ever fail on this hardware.
-            state = read_state()
-            state["speedtestSupported"] = False
-            write_state(state)
-            print(f"{APP}: this gateway does not support controller-run speed "
-                  f"tests. Run one from the UniFi app, or from a client with "
-                  f"`speedtest-cli`.", file=sys.stderr)
-            return 1
-        print(f"{APP}: {exc}", file=sys.stderr)
-        return 1
-    print("Speed test started.")
-    if not args.wait:
-        return 0
-    # The console reports progress through devmgr; results land in health.
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        time.sleep(5)
-        try:
-            rows = api.legacy("cmd/devmgr", {"cmd": "speedtest-status"})
-            status = rows[0] if rows else {}
-            # Only a positive verdict ends the wait. Treating "" as done
-            # returned the *previous* run's numbers seconds after starting.
-            if str(status.get("speedtest_status") or "").lower() in ("success", "done"):
-                break
-        except UniFiError:
-            break
-    try:
-        state = collect(api)
-        write_state(state)
-        result = state["wan"]["speedtest"]
-        if result["downMbps"] >= 0:
-            print(f"down {result['downMbps']:.1f} Mbps  "
-                  f"up {result['upMbps']:.1f} Mbps  "
-                  f"latency {result['latencyMs']:.0f} ms")
-    except UniFiError as exc:
-        print(f"{APP}: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
 def cmd_open(args) -> int:
     cfg = load_config()
     if not cfg["host"]:
@@ -997,10 +944,6 @@ def main(argv=None) -> int:
         p = sub.add_parser(name, help=helptext)
         p.add_argument("mac")
         p.set_defaults(func=func)
-
-    p_speed = sub.add_parser("speedtest", help="run a WAN speed test")
-    p_speed.add_argument("--wait", action="store_true", help="wait for the result")
-    p_speed.set_defaults(func=cmd_speedtest)
 
     args = parser.parse_args(argv)
     try:

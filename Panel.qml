@@ -31,7 +31,6 @@ Panel {
   property var state: ({})
   property string actionError: ""
   property string busyLabel: ""
-  property bool speedtestRunning: false
 
   readonly property int refreshSeconds: Math.max(3, setting("refreshIntervalSec", 10))
   readonly property int maxClients: Math.max(3, setting("maxClients", 25))
@@ -56,9 +55,6 @@ Panel {
                                      && state.configured !== false
   readonly property bool stale: configured && state.stale === true
   readonly property bool wanUp: wan && wan.up === true
-  // Learned from the console the first time a speed test is refused: some
-  // gateways (the USG family) cannot run one on the controller's behalf.
-  readonly property bool speedtestSupported: !state || state.speedtestSupported !== false
   // Deliberately excludes `stale` and `notices`: a dropped poll gets the bar's
   // quiet dot, and a deferred firmware update should not look like an outage.
   readonly property bool healthy: configured && wanUp && alerts.length === 0
@@ -170,16 +166,6 @@ Panel {
     runAction(["unblock", entry.mac], "Unblocking " + entry.name)
   }
 
-  function runSpeedtest() {
-    if (speedtestProcess.running) return
-    root.speedtestRunning = true
-    root.actionError = ""
-    // Its own Process: a speed test can run for two minutes, and sharing the
-    // action process would lock every other button for the duration.
-    speedtestProcess.command = [root.cli, "speedtest", "--wait"]
-    speedtestProcess.running = true
-  }
-
   function openConsole() {
     launchProcess.command = [root.cli, "open"]
     launchProcess.running = true
@@ -237,21 +223,6 @@ Panel {
   Process { id: launchProcess; running: false }
 
   Process {
-    id: speedtestProcess
-    running: false
-    stderr: StdioCollector {
-      onStreamFinished: {
-        var message = text.trim()
-        if (message !== "") root.actionError = message
-      }
-    }
-    onExited: {
-      root.speedtestRunning = false
-      stateFile.reload()
-    }
-  }
-
-  Process {
     id: actionProcess
     running: false
     stderr: StdioCollector {
@@ -262,7 +233,6 @@ Panel {
     }
     onExited: function(exitCode) {
       root.busyLabel = ""
-      root.speedtestRunning = false
       if (exitCode === 0) root.actionError = ""
       stateFile.reload()
     }
@@ -369,14 +339,6 @@ Panel {
             }
 
             ActionButton {
-              visible: root.configured && root.speedtestSupported
-              label: root.speedtestRunning ? "Testing…" : "Speed test"
-              outlined: true
-              enabled: !root.speedtestRunning
-              onTriggered: root.runSpeedtest()
-            }
-
-            ActionButton {
               visible: root.configured
               label: "Console"
               outlined: true
@@ -436,9 +398,10 @@ Panel {
                   textFormat: Text.PlainText
                   width: parent.width
                   wrapMode: Text.WordWrap
-                  text: "Create an API key in UniFi Network under Settings → Control "
-                      + "Plane → Integrations, then run setup. The key is stored in "
-                      + "your config directory, readable only by you."
+                  text: "Open your console's Integrations page, create an API "
+                      + "key, then run setup — it prints the exact URL for your "
+                      + "console. The key is stored in your config directory, "
+                      + "readable only by you."
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -515,30 +478,7 @@ Panel {
               }
             }
 
-                // Last speed-test result, shown whether or not this session ran
-            // it: the CLI has always recorded it and nothing displayed it.
-            Text {
-              textFormat: Text.PlainText
-              visible: root.configured && root.speedtestSupported
-                       && root.wan.speedtest && root.wan.speedtest.downMbps >= 0
-                       && root.wan.speedtest.ranAt > 0
-              width: parent.width
-              leftPadding: Style.space(14)
-              text: {
-                var t = root.wan.speedtest
-                if (!t) return ""
-                var parts = ["speed test " + t.downMbps.toFixed(1) + " ↓ "
-                           + t.upMbps.toFixed(1) + " ↑ Mbps"]
-                if (t.latencyMs >= 0) parts.push(Math.round(t.latencyMs) + " ms")
-                parts.push(root.relativeAge(t.ranAt))
-                return parts.join("  ·  ")
-              }
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            // A device or client fetch that failed used to hide its whole
+                // A device or client fetch that failed used to hide its whole
             // section, leaving a hero and nothing else with no explanation.
             Text {
               textFormat: Text.PlainText

@@ -2,8 +2,8 @@
 
 A bar widget for a UniFi OS console — Dream Machine, Cloud Gateway, UDM Pro,
 UDR, or UniFi OS Server. It shows what your network is doing without opening
-the UniFi app, and handles the three things you usually open the app for:
-restarting a device, blocking a client, and running a speed test.
+the UniFi app, and handles the two things you usually open the app for:
+restarting a device and blocking a client.
 
 In the bar it is a single icon that turns your theme's urgent colour when
 something is wrong. A healthy network stays visually quiet and costs one
@@ -22,9 +22,15 @@ cd omarchy-plugin-unifi
 omarchy-unifi setup
 ```
 
-`setup` asks for your console's address and an API key. Create the key in the
-UniFi Network app under **Settings → Control Plane → Integrations → Create API
-Key**. It is shown once, so copy it before closing the dialog.
+`setup` asks for your console's address and site, then prints the exact URL of
+your console's Integrations page — something like:
+
+```
+https://192.168.1.9/network/default/integrations
+```
+
+Open that, **Create API Key**, and paste it in. The key is shown once, so copy
+it before closing the dialog.
 
 Setup verifies the connection before saving anything, then enables the
 background poller. If it cannot connect, nothing is written.
@@ -49,11 +55,6 @@ Hovering a row reveals its actions. Devices can be restarted. Clients can be
 reconnected or blocked, and blocked clients unblocked. Restarting and blocking
 ask for confirmation first; reconnecting does not, because a client normally
 comes straight back.
-
-**Speed tests** need a gateway that can run one on the controller's behalf.
-The USG family cannot — the console answers `api.err.SpeedTestNotSupported` —
-so the first refusal is remembered and the button stops being offered. Run
-one from the UniFi app instead, or with `speedtest-cli` on a client.
 
 ## Configuration
 
@@ -110,7 +111,6 @@ omarchy-unifi devices         # every adopted device with its MAC
 omarchy-unifi doctor          # check the address, key, TLS, and endpoints
 omarchy-unifi poll            # refresh once
 omarchy-unifi trust-cert      # re-pin after the console's certificate changes
-omarchy-unifi speedtest --wait   # if your gateway supports it
 omarchy-unifi restart <mac>
 omarchy-unifi block <mac> | unblock <mac> | kick <mac>
 ```
@@ -136,7 +136,7 @@ behaviour in the panel is reproducible from a terminal.
 
 Reads and writes both use the console's `/proxy/network/api` surface, which on
 UniFi OS accepts the same API key as the newer Integration API and is the only
-one that exposes health rollups, client blocking, and speed tests. `doctor`
+one that exposes health rollups and client blocking. `doctor`
 probes the Integration API too, so a key that only works there produces a
 clear diagnosis rather than an empty panel.
 

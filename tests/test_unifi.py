@@ -39,8 +39,7 @@ HEALTH = [
      "rx_bytes-r": 1_250_000, "tx_bytes-r": 140_000, "uptime": 864000,
      "num_gw": 1, "num_adopted": 1, "num_disconnected": 0},
     {"subsystem": "www", "status": "ok", "latency": 12,
-     "xput_down": 934.2, "xput_up": 887.1, "speedtest_ping": 11,
-     "speedtest_lastrun": 1757000000, "speedtest_status": "Success"},
+     "xput_down": 934.2, "xput_up": 887.1},
     {"subsystem": "wlan", "status": "ok", "num_user": 18, "num_guest": 2,
      "num_ap": 3, "num_adopted": 3, "num_disconnected": 0},
     {"subsystem": "lan", "status": "ok", "num_user": 6, "num_sw": 2,
@@ -91,12 +90,6 @@ class TestWan(unittest.TestCase):
 
     def test_latency_comes_from_www_subsystem(self):
         self.assertEqual(self.wan["latencyMs"], 12)
-
-    def test_speedtest_results_are_carried_through(self):
-        st = self.wan["speedtest"]
-        self.assertAlmostEqual(st["downMbps"], 934.2)
-        self.assertAlmostEqual(st["upMbps"], 887.1)
-        self.assertEqual(st["status"], "Success")
 
     def test_wan_down_is_detected(self):
         health = [dict(h) for h in HEALTH]
@@ -262,10 +255,10 @@ class TestApiErrors(unittest.TestCase):
 
     def test_known_code_is_translated(self):
         err = self.FakeHttpError(
-            '{"meta":{"rc":"error","msg":"api.err.SpeedTestNotSupported"},"data":[]}')
+            '{"meta":{"rc":"error","msg":"api.err.NoSiteContext"},"data":[]}')
         code, message = uni._api_error(err)
-        self.assertEqual(code, "api.err.SpeedTestNotSupported")
-        self.assertIn("does not support", message)
+        self.assertEqual(code, "api.err.NoSiteContext")
+        self.assertIn("site not found", message)
 
     def test_unknown_code_is_passed_through_verbatim(self):
         err = self.FakeHttpError('{"meta":{"rc":"error","msg":"api.err.Weird"}}')
