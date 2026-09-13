@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/pkeenan87/omarchy-ubiquiti-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/pkeenan87/omarchy-ubiquiti-plugin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Omarchy plugin](https://img.shields.io/badge/omarchy-plugin-6f42c1)](https://plugins.omarchy.org)
+[![Built for Omarchy: Plugin](https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg)](https://plugins.omarchy.org)
 
 ![The panel, showing internet status, devices and clients](preview.png)
 
