@@ -8,3 +8,7 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore"
+    # Paused while the marketplace submission is under review. Approval is bound
+    # to an exact commit SHA, so an actions bump landing mid-review invalidates
+    # the validated snapshot. Restore this to the default limit once listed.
+    open-pull-requests-limit: 0
