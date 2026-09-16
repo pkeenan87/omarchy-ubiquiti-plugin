@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Cap every console response at `MAX_RESPONSE_BYTES` (8 MiB). An oversized
+  `Content-Length` is rejected before the body is read, and the read asks for
+  at most the limit plus one byte so a console that understates or omits the
+  header is caught as well. The cap is applied before decoding or JSON
+  parsing, and covers HTTP error bodies as well as successful ones. Reported
+  in the marketplace security review: `timeoutSec` bounds how long a read may
+  block but not how many bytes arrive, and the systemd `MemoryMax` protects
+  only the daemon — not an interactive `poll` or a panel action, both of which
+  run as the user.
+
 ## [1.0.0] — 2026-09-12
 
 First release.

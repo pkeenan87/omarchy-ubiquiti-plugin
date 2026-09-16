@@ -245,13 +245,31 @@ class TestAlerts(unittest.TestCase):
         self.assertEqual(uni.build_notices(devices), [])
 
 
-class TestApiErrors(unittest.TestCase):
-    class FakeHttpError:
-        def __init__(self, payload):
-            self._payload = payload
+class FakeResponse:
+    """Stands in for an HTTPResponse or an HTTPError.
 
-        def read(self):
-            return self._payload.encode()
+    Both are read through the same capped reader, so the fake honours the
+    `amt` argument and exposes `headers` the way urllib does - a fake that
+    ignored `amt` would let an unbounded read pass its tests.
+    """
+
+    def __init__(self, payload, content_length="auto"):
+        self._payload = payload.encode() if isinstance(payload, str) else payload
+        if content_length == "auto":
+            content_length = str(len(self._payload))
+        self.headers = {} if content_length is None else {
+            "Content-Length": content_length}
+        self._pos = 0
+
+    def read(self, amt=None):
+        chunk = self._payload[self._pos:] if amt is None \
+            else self._payload[self._pos:self._pos + amt]
+        self._pos += len(chunk)
+        return chunk
+
+
+class TestApiErrors(unittest.TestCase):
+    FakeHttpError = FakeResponse
 
     def test_known_code_is_translated(self):
         err = self.FakeHttpError(
@@ -271,6 +289,73 @@ class TestApiErrors(unittest.TestCase):
 
     def test_body_without_a_message(self):
         self.assertEqual(uni._api_error(self.FakeHttpError('{"meta":{"rc":"ok"}}')), ("", ""))
+
+
+class TestResponseSizeCap(unittest.TestCase):
+    """A console must not be able to make this process buffer unbounded data.
+
+    `timeoutSec` bounds how long a read may block, not how many bytes arrive,
+    and the daemon's systemd MemoryMax does not cover the CLI the panel
+    shells out to - so the cap is the only thing standing between a hostile
+    console and the desktop session's memory.
+    """
+
+    def test_a_body_at_the_limit_is_returned_whole(self):
+        resp = FakeResponse("x" * 64)
+        self.assertEqual(len(uni._read_capped(resp, limit=64)), 64)
+
+    def test_one_byte_over_the_limit_is_refused(self):
+        with self.assertRaises(uni.ResponseTooLarge):
+            uni._read_capped(FakeResponse("x" * 65), limit=64)
+
+    def test_an_oversized_content_length_is_refused_without_reading(self):
+        resp = FakeResponse("x" * 8, content_length=str(1 << 40))
+        with self.assertRaises(uni.ResponseTooLarge):
+            uni._read_capped(resp, limit=64)
+        # Refused on the header alone: nothing was pulled off the socket.
+        self.assertEqual(resp._pos, 0)
+
+    def test_a_missing_content_length_is_still_capped(self):
+        # The header is the console's claim; the read is the guard. A body
+        # streamed with no declared length must still hit the ceiling.
+        with self.assertRaises(uni.ResponseTooLarge):
+            uni._read_capped(FakeResponse("x" * 200, content_length=None), limit=64)
+
+    def test_a_junk_content_length_is_ignored_not_fatal(self):
+        resp = FakeResponse("payload", content_length="not-a-number")
+        self.assertEqual(uni._read_capped(resp, limit=64), b"payload")
+
+    def test_an_understated_content_length_does_not_raise_the_ceiling(self):
+        # Lying low is the mirror image of lying high: the read still stops.
+        with self.assertRaises(uni.ResponseTooLarge):
+            uni._read_capped(FakeResponse("x" * 200, content_length="4"), limit=64)
+
+    def test_the_cap_is_a_uni_fi_error_so_callers_already_handle_it(self):
+        # Every command path already funnels UniFiError into a readable
+        # message; the cap must not escape as an unhandled traceback.
+        self.assertTrue(issubclass(uni.ResponseTooLarge, uni.UniFiError))
+        self.assertIn("limit", str(uni.ResponseTooLarge(64)))
+
+    def test_an_oversized_error_body_degrades_instead_of_exploding(self):
+        # Error bodies are read too, and _api_error is best-effort: an
+        # oversized one drops the optional detail, while the HTTP status the
+        # caller raises still reaches the user.
+        huge = '{"meta":{"msg":"api.err.NoSiteContext"}}' + " " * 400
+        original = uni.MAX_RESPONSE_BYTES
+        uni.MAX_RESPONSE_BYTES = 64
+        try:
+            self.assertEqual(uni._api_error(FakeResponse(huge)), ("", ""))
+            # Same body under a cap that fits still yields its detail, so the
+            # empty result above is the cap talking and not a broken parser.
+            uni.MAX_RESPONSE_BYTES = original
+            self.assertEqual(
+                uni._api_error(FakeResponse(huge))[0], "api.err.NoSiteContext")
+        finally:
+            uni.MAX_RESPONSE_BYTES = original
+
+    def test_the_shipped_default_is_a_real_ceiling(self):
+        self.assertIsInstance(uni.MAX_RESPONSE_BYTES, int)
+        self.assertGreater(uni.MAX_RESPONSE_BYTES, 0)
 
 
 class TestFormatting(unittest.TestCase):

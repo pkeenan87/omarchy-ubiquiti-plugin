@@ -51,6 +51,9 @@ RESPONSES = {
 
 received = []
 
+# Comfortably past the cap the size tests install, small enough to stay fast.
+FLOOD_BYTES = 256 * 1024
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -78,12 +81,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         endpoint = self.path[len(prefix):]
         received.append((endpoint, body))
-        if endpoint in RESPONSES:
+        if endpoint == "flood/declared":
+            # An honest console that simply has far too much to say: the
+            # length is truthful and the body really is that big.
+            self._flood(declare=True)
+        elif endpoint == "flood/undeclared":
+            # The case a Content-Length check alone would miss - no declared
+            # length at all, just bytes until the client gives up.
+            self._flood(declare=False)
+        elif endpoint in RESPONSES:
             self._send(200, {"meta": {"rc": "ok"}, "data": RESPONSES[endpoint]})
         elif endpoint.startswith("cmd/"):
             self._send(200, {"meta": {"rc": "ok"}, "data": []})
         else:
             self._send(404, {"meta": {"rc": "error", "msg": "api.err.UnknownEndpoint"}})
+
+    def _flood(self, declare):
+        """Send FLOOD_BYTES of JSON, with or without announcing the size."""
+        body = b'{"meta":{"rc":"ok"},"data":"' + b"A" * FLOOD_BYTES + b'"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        if declare:
+            self.send_header("Content-Length", str(len(body)))
+        else:
+            # No length and no keep-alive: the body ends when the socket
+            # does, which is exactly the unbounded read being guarded.
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Expected: the client hangs up mid-body once the cap trips.
+            pass
 
     def do_GET(self):
         self._handle()
@@ -261,6 +291,37 @@ class TestAgainstStubConsole(unittest.TestCase):
         with self.assertRaises(uni.UniFiError) as ctx:
             dead.legacy("stat/health")
         self.assertIn("cannot reach", str(ctx.exception))
+
+    def test_an_oversized_reply_is_refused_over_real_tls(self):
+        # End-to-end through the real client and a real socket: the console
+        # answers 200 with far more than the cap allows.
+        original = uni.MAX_RESPONSE_BYTES
+        uni.MAX_RESPONSE_BYTES = 16 * 1024
+        try:
+            for endpoint in ("flood/declared", "flood/undeclared"):
+                with self.subTest(endpoint=endpoint):
+                    with self.assertRaises(uni.ResponseTooLarge):
+                        self.api.legacy(endpoint)
+        finally:
+            uni.MAX_RESPONSE_BYTES = original
+
+    def test_a_flooding_console_cannot_break_a_panel_action(self):
+        # The panel shells out for actions, so this is the path the daemon's
+        # systemd MemoryMax does not cover. It must fail like any other
+        # console error - a readable UniFiError, not a MemoryError.
+        original = uni.MAX_RESPONSE_BYTES
+        uni.MAX_RESPONSE_BYTES = 16 * 1024
+        try:
+            with self.assertRaises(uni.UniFiError) as ctx:
+                self.api.legacy("flood/undeclared")
+            self.assertEqual(ctx.exception.api_code, "response-too-large")
+            self.assertIn("limit", str(ctx.exception))
+        finally:
+            uni.MAX_RESPONSE_BYTES = original
+
+    def test_normal_replies_are_unaffected_by_the_cap(self):
+        # The guard must not clip a legitimate payload that sits under it.
+        self.assertEqual(len(self.api.legacy("stat/sta")), len(CLIENTS))
 
     def test_action_payloads_match_the_unifi_command_api(self):
         with tempfile.TemporaryDirectory() as tmp:
