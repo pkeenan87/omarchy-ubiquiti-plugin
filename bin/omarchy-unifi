@@ -45,6 +45,15 @@ DEFAULT_CONFIG = {
     "timeoutSec": 6,
 }
 
+# The largest console reply we are willing to hold in memory. A busy site's
+# `stat/sta` rollup is a few hundred KB, so this is generous headroom for a
+# real console and still a hard ceiling for a compromised or malfunctioning
+# one. `timeoutSec` bounds how long a read may block but not how many bytes
+# it may deliver, and the daemon's systemd MemoryMax does not cover the CLI
+# the panel shells out to - so the byte cap has to live here, in the one
+# place every request passes through.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 
 # --------------------------------------------------------------------------
 # config
@@ -177,6 +186,48 @@ class UniFiError(Exception):
         self.api_code = api_code
 
 
+class ResponseTooLarge(UniFiError):
+    """The console offered more bytes than we agreed to buffer."""
+
+    def __init__(self, limit: int):
+        super().__init__(
+            f"console reply exceeds the {limit} byte limit; refusing to buffer it",
+            api_code="response-too-large")
+        self.limit = limit
+
+
+def _read_capped(resp, limit: int | None = None) -> bytes:
+    """Read a response body, refusing to buffer more than `limit` bytes.
+
+    Both the declared length and the delivered bytes are checked, because
+    neither alone is enough: a hostile console can overstate Content-Length,
+    understate it, or omit it and stream a chunked body forever. Asking for
+    one byte past the limit is what makes an overrun detectable without
+    trusting the header at all.
+
+    Callers must route every network body through this - the cap has to
+    apply before decoding or JSON parsing, since both allocate from the
+    bytes we just read.
+    """
+    # Resolved per call rather than bound as a default, so the ceiling stays
+    # a single source of truth the tests can turn down.
+    limit = MAX_RESPONSE_BYTES if limit is None else limit
+    headers = getattr(resp, "headers", None)
+    declared = headers.get("Content-Length") if headers is not None else None
+    try:
+        announced = int(declared)
+    except (TypeError, ValueError):
+        # Absent or unparseable: no reason to trust it, and no reason to fail
+        # on it either. The read below is the guard that cannot be lied to.
+        announced = -1
+    if announced > limit:
+        raise ResponseTooLarge(limit)
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ResponseTooLarge(limit)
+    return body
+
+
 # Console error codes worth translating; anything else is shown verbatim.
 API_ERRORS = {
     "api.err.NoSiteContext": "site not found - check the site name",
@@ -191,7 +242,7 @@ def _api_error(exc):
     while the user sees plain words.
     """
     try:
-        body = json.loads(exc.read().decode("utf-8", "replace"))
+        body = json.loads(_read_capped(exc).decode("utf-8", "replace"))
         code = str(body.get("meta", {}).get("msg") or "")
     except Exception:
         return "", ""
@@ -254,7 +305,7 @@ class UniFi:
             req.add_header("Content-Type", "application/json")
         try:
             with self.opener.open(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8", "replace")
+                raw = _read_capped(resp).decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             code, detail = _api_error(exc)
             if exc.code in (401, 403):
